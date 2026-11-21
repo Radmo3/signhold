@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.0 (21 Nov 2026)
+
+- **Inalienable human approval of escalations (I-HITL).** An `escalate` verdict now stays blocked on the server until `POST /v1/approvals` receives an Ed25519 signature from a key registered in `SIGNHOLD_APPROVER_KEYS` over a challenge sealed into the signed audit record (bound to audit id, intent hash, decision hash, policy, agent id, issue time). Single use, 15-minute TTL, any invalid attempt burns the challenge, approvals and rejections are chained audit records. The SDK can only poll `GET /v1/approvals/:auditId`; `guard()` defaults to `approval: "server"` and refuses an in-process `onEscalate` callback in that mode (the old behaviour survives only as opt-in advisory mode with a startup warning). Addresses a review by one of the I-HITL authors (arXiv:2610.35835). Weak I-HITL in that paper's terms: enrollment is unattested.
+- **Trusted-display approver CLI.** `approve.ts` fetches the sealed audit record itself, recomputes the challenge, shows the decoded transaction, requires a typed confirmation, and never signs a bare challenge.
+- **Threat model T7** ("agent reaches the approval channel") and three adversarial tests for forged, replayed and re-bound approvals.
+- **Technical report** in `docs/report/` (15 pages) with evaluation logs.
 - **Cap-bypass experiment harness** (`experiments/cap-bypass/`, private workspace, not published): a simulated reproduction of the I-HITL cap-bypass study (arXiv:2610.35835) with a `baseline` arm and a `signhold` arm (in-process API, operator-held policy, approver-device fixture unreachable from the agent), scripted agents for CI (`npm run experiment:smoke`), Anthropic / OpenAI / OpenAI-compatible model adapters, JSONL results with Wilson intervals and a markdown report. No network, no funds.
 - **Renamed the project from AgentGuard to Signhold.** Signhold was briefly published as AgentGuard (Nov 2026) and renamed to avoid a conflict with an unrelated registered trademark. Package scope `@agentguard/*` is now `@signhold/*`, environment variables `AGENTGUARD_*` are now `SIGNHOLD_*`, the request-signing headers `x-agentguard-{signature,timestamp,nonce}` are now `x-signhold-{signature,timestamp,nonce}`, and the SDK classes `AgentGuard*` are now `Signhold*`. No security behaviour, canonical signing string, audit record format or policy semantics changed. Nothing had been published to npm under the old names.
 

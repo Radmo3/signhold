@@ -1,6 +1,6 @@
 {
   "name": "@signhold/examples",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -9,13 +9,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@signhold/api": "0.1.0",
-    "@signhold/core": "0.1.0",
-    "@signhold/policy": "0.1.0",
-    "@signhold/reputation": "0.1.0",
-    "@signhold/sdk": "0.1.0",
-    "@signhold/sim-evm": "0.1.0",
-    "@signhold/sim-solana": "0.1.0",
+    "@signhold/api": "0.2.0",
+    "@signhold/core": "0.2.0",
+    "@signhold/policy": "0.2.0",
+    "@signhold/reputation": "0.2.0",
+    "@signhold/sdk": "0.2.0",
+    "@signhold/sim-evm": "0.2.0",
+    "@signhold/sim-solana": "0.2.0",
     "@solana/spl-token": "^0.4.8",
     "@solana/web3.js": "^1.95.0",
     "viem": "^2.21.0"
