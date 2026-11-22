@@ -4,7 +4,7 @@
  *   npx tsx experiments/cap-bypass/src/run.ts --arm baseline|signhold|both [--framework reference|agentkit] --scenario 1|2|both \
  *     --agent scripted:bypasser|anthropic:<model>|openai:<model>|compat:<model> --trials 20 --seed 42 \
  *     [--behavior[=<module>]] [--behavior-seed 30] [--cap 0.01] [--balance 10] [--max-steps 40] \
- *     [--policy-instruction] [--attacker-amount 0.02] [--base-url <url>] [--temperature <t>] [--out results/<name>.jsonl]
+ *     [--policy-instruction] [--attacker-lookalike] [--attacker-amount 0.02] [--base-url <url>] [--temperature <t>] [--out results/<name>.jsonl]
  *
  * Writes one JSON line per trial to --out (default results/<agent>-<seed>.jsonl), a
  * summary table to stdout and `summary.json` next to the JSONL.
@@ -31,6 +31,7 @@ export interface ExperimentOptions {
   startingBalanceUsdc?: number;
   maxSteps?: number;
   policyInstruction?: boolean;
+  attackerLookalike?: boolean;
   attackerAmountUsdc?: number;
   behavior?: boolean | string;
   behaviorSeedCount?: number;
@@ -60,7 +61,7 @@ export async function runExperiment(opts: ExperimentOptions): Promise<Experiment
         }
         for (let i = 0; i < opts.trials; i++) {
           const r = await runTrial(
-            { arm, framework, scenario, trialIndex: i, seed: opts.seed, capUsdc, startingBalanceUsdc: opts.startingBalanceUsdc ?? 10, maxSteps: opts.maxSteps ?? 40, policyInstruction: opts.policyInstruction, attackerAmountUsdc: opts.attackerAmountUsdc },
+            { arm, framework, scenario, trialIndex: i, seed: opts.seed, capUsdc, startingBalanceUsdc: opts.startingBalanceUsdc ?? 10, maxSteps: opts.maxSteps ?? 40, policyInstruction: opts.policyInstruction, attackerAmountUsdc: opts.attackerAmountUsdc, attackerLookalike: opts.attackerLookalike },
             { agent: opts.agent, signhold: arm === "signhold" ? signhold : undefined },
           );
           results.push(r);
@@ -95,6 +96,7 @@ export function parseCli(argv: string[]) {
       behavior: { type: "string" },
       "behavior-seed": { type: "string", default: "30" },
       "policy-instruction": { type: "boolean", default: false },
+      "attacker-lookalike": { type: "boolean", default: false },
       "attacker-amount": { type: "string", default: "0.02" },
       "base-url": { type: "string" },
       temperature: { type: "string" },
@@ -134,6 +136,7 @@ export function parseCli(argv: string[]) {
     behavior,
     behaviorSeedCount: Math.floor(num(values["behavior-seed"], "behavior-seed")),
     policyInstruction: values["policy-instruction"]!,
+    attackerLookalike: values["attacker-lookalike"]!,
     attackerAmountUsdc: num(values["attacker-amount"], "attacker-amount"),
     baseUrl: values["base-url"],
     temperature: values.temperature === undefined ? undefined : num(values.temperature, "temperature"),
@@ -171,6 +174,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     startingBalanceUsdc: cli.startingBalanceUsdc,
     maxSteps: cli.maxSteps,
     policyInstruction: cli.policyInstruction,
+    attackerLookalike: cli.attackerLookalike,
     attackerAmountUsdc: cli.attackerAmountUsdc,
     behavior: cli.behavior,
     behaviorSeedCount: cli.behaviorSeedCount,
@@ -183,7 +187,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   writeFileSync(
     summaryPath,
     JSON.stringify(
-      { generatedAt: new Date().toISOString(), seed: cli.seed, trials: cli.trials, agent: agent.id, framework: cli.framework, capUsdc: cli.capUsdc, attackerAmountUsdc: cli.attackerAmountUsdc, behaviorModule: out.behaviorModule, policyInstruction: cli.policyInstruction, durationMs: Date.now() - t0, groups: out.summary },
+      { generatedAt: new Date().toISOString(), seed: cli.seed, trials: cli.trials, agent: agent.id, framework: cli.framework, capUsdc: cli.capUsdc, attackerAmountUsdc: cli.attackerAmountUsdc, behaviorModule: out.behaviorModule, policyInstruction: cli.policyInstruction, attackerLookalike: cli.attackerLookalike, durationMs: Date.now() - t0, groups: out.summary },
       null,
       2,
     ),

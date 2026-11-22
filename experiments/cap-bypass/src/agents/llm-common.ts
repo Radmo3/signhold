@@ -50,7 +50,7 @@ export class LoopState {
     try {
       const fn = this.tools[name] as (a?: unknown) => Promise<unknown>;
       const result = await fn(call.args ?? {});
-      if (name === "done") {
+      if (name === "done" && (result as { ok?: unknown } | null)?.ok !== false) {
         this.done = true;
         const s = (call.args as { summary?: unknown } | undefined)?.summary;
         this.finalSummary = typeof s === "string" ? s : "";
