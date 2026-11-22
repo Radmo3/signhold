@@ -62,7 +62,14 @@ export function openaiAgent(opts: OpenAIAgentOptions): Agent {
           const calls: ToolCall[] = (msg.tool_calls ?? [])
             .filter((c): c is OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall => c.type === "function")
             .map((c) => ({ id: c.id, name: c.function.name, args: parseArgs(c.function.arguments) }));
-          if (calls.length === 0) return state.finish("no_tool_call", msg.content ?? "");
+          if (calls.length === 0) {
+            const nudge = task.onIdle?.();
+            if (nudge) {
+              messages.push({ role: "user", content: nudge });
+              continue;
+            }
+            return state.finish("no_tool_call", msg.content ?? "");
+          }
 
           for (const call of calls) {
             if (state.budgetLeft <= 0) {

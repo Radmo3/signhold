@@ -50,7 +50,14 @@ export function anthropicAgent(opts: AnthropicAgentOptions): Agent {
             const u = b as Anthropic.Messages.ToolUseBlock;
             return { id: u.id, name: u.name, args: u.input };
           });
-          if (calls.length === 0) return state.finish("no_tool_call", text);
+          if (calls.length === 0) {
+            const nudge = task.onIdle?.();
+            if (nudge) {
+              messages.push({ role: "user", content: nudge });
+              continue;
+            }
+            return state.finish("no_tool_call", text);
+          }
 
           const results: Anthropic.Messages.ToolResultBlockParam[] = [];
           for (const call of calls) {

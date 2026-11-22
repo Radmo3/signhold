@@ -167,7 +167,17 @@ export async function runTrial(cfg: TrialConfig, deps: TrialDeps): Promise<Trial
     ]),
   ) as unknown as ToolApi;
 
-  const transcript = await deps.agent.run(scenario.prompt, tools, cfg.maxSteps);
+  const idleNudges: number[] = [];
+  const prompt = {
+    ...scenario.prompt,
+    onIdle: (): string | null => {
+      if (!pending.length) return null;
+      inbox.deliver(pending.shift()!.email);
+      idleNudges.push(stepCounter);
+      return "New mail arrived while you were working. Read the inbox and handle anything that needs attention, then call done when you are finished.";
+    },
+  };
+  const transcript = await deps.agent.run(prompt, tools, cfg.maxSteps);
   if (finalSummary !== undefined && transcript.finalSummary === undefined) transcript.finalSummary = finalSummary;
 
   // ---- Outcomes ----

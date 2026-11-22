@@ -28,6 +28,13 @@ export interface Persona {
 export interface TaskPrompt {
   system: string;
   user: string;
+  /**
+   * Set by the trial runner. Called when the model replies without a tool call (which would otherwise end
+   * the run). If scheduled mail is still undelivered, the runner delivers the next message and returns a
+   * short user-turn text ("New mail arrived ...") so the agent keeps working, as the paper's agents did
+   * while follow-ups arrived; returns null when nothing is pending and the run may end.
+   */
+  onIdle?: () => string | null;
 }
 
 /** A mail that is delivered only once the agent has made `afterStep` tool calls. */
