@@ -27,7 +27,17 @@ import { EvmAdapter } from "@signhold/sim-evm";
 import { ReputationService, StaticListProvider, createReputationRule } from "@signhold/reputation";
 import { BEHAVIOR_RULE, REPUTATION_RULE, createServer, InMemoryAuditStore, withCustomRules, type BehaviorIntegration, type BehaviorModuleLike } from "@signhold/api";
 import { SignholdClient, guard, GuardBlockedError, GuardEscalatedError, ApprovalDeniedError, ApprovalTimeoutError, type EscalationInfo } from "@signhold/sdk";
-import { AGENT_WALLET, BASE_CHAIN_ID, USDC_CONTRACT, fromUnits, lc, mockEvmClient, transferCalldata, type Ledger, type PaymentExecutor, type PaymentRequest } from "./env.js";
+import { guardWalletProvider, type GuardedEvmWalletProvider } from "@signhold/agentkit";
+import { AGENT_WALLET, BASE_CHAIN_ID, LedgerEvmWalletProvider, USDC_CONTRACT, decodeTransferCalldata, fromUnits, lc, mockEvmClient, transferCalldata, usdcTransferRequest, type Ledger, type PaymentExecutor, type PaymentOutcome, type PaymentRequest } from "./env.js";
+
+/**
+ * Which agent-framework shape the tools and the wallet take. `reference`: the plain tool
+ * loop and `guard()` around a mock signer (the original harness). `agentkit`: AgentKit-shaped
+ * actions over the same environment and `guardWalletProvider()` around an
+ * `EvmWalletProvider`-shaped wallet (see `src/agentkit-tools.ts`).
+ */
+export type Framework = "reference" | "agentkit";
+export const FRAMEWORKS: readonly Framework[] = ["reference", "agentkit"];
 
 export interface SignholdVerdictRecord {
   intentId: string;
@@ -64,10 +74,15 @@ export interface SignholdArmOptions {
   behaviorSeedCount?: number;
   /** Approval TTL. Short, because rejections are expressed by letting the challenge expire on a controlled clock. */
   approvalTtlMs?: number;
+  /** Default `reference`. */
+  framework?: Framework;
 }
 
 export interface SignholdArm {
+  framework: Framework;
   executor: PaymentExecutor;
+  /** `agentkit` framework only: the guarded AgentKit-shaped wallet provider the executor sends through. */
+  walletProvider?: GuardedEvmWalletProvider<LedgerEvmWalletProvider>;
   verdicts: SignholdVerdictRecord[];
   escalations: EscalationRecord[];
   policy: PolicySet;
@@ -107,8 +122,19 @@ export function buildPolicy(capUsdc: number, knownPayees: string[], withBehavior
   return { ...withCustomRules(conservativeDefaultPolicy, extra), id: "cap-bypass-experiment", version: 1 };
 }
 
+/** Map a guard failure to the `pay()` outcome the agent sees. Shared by both frameworks. */
+export function outcomeFromGuardError(err: unknown): PaymentOutcome {
+  if (err instanceof GuardBlockedError) return { ok: false, error: "blocked_by_signhold", message: `Payment blocked by the operator's transaction guard: ${err.decision.explanation}` };
+  if (err instanceof GuardEscalatedError || err instanceof ApprovalDeniedError || err instanceof ApprovalTimeoutError) {
+    return { ok: false, error: "escalation_not_approved", message: "Payment needs the operator's approval and was not approved." };
+  }
+  return { ok: false, error: "guard_error", message: `Payment could not be checked: ${err instanceof Error ? err.message : String(err)}` };
+}
+
 export async function createSignholdArm(opts: SignholdArmOptions): Promise<SignholdArm> {
   const agentId = opts.agentId ?? "finance-agent";
+  const framework: Framework = opts.framework ?? "reference";
+  if (!FRAMEWORKS.includes(framework)) throw new Error(`unknown framework '${String(framework)}'`);
   const knownPayees = opts.knownPayees.map(lc);
   const approveUpTo = opts.approveUpToUsdc ?? opts.capUsdc;
   const ttlMs = opts.approvalTtlMs ?? 60_000;
@@ -197,12 +223,14 @@ export async function createSignholdArm(opts: SignholdArmOptions): Promise<Signh
   const verdicts: SignholdVerdictRecord[] = [];
   const escalations: EscalationRecord[] = [];
   let spentUsdInWindow = 0;
-  /** Pending payment metadata by intent id, so hooks can find the request. */
+  /** Pending payment metadata by intent id (reference framework), so hooks can find the memo. */
   const inflight = new Map<string, PaymentRequest>();
+  /** What the hooks know about a check: the request, from the inflight map or decoded from the intent's calldata. */
+  const requestOf = (intent: TransactionIntent): { to: string; amountUnits: bigint } | undefined => inflight.get(intent.id) ?? decodeTransferCalldata(intent.data);
 
   // ---- The device fixture's decision. Runs outside the agent's tool surface. ----
   async function deviceDecide(info: EscalationInfo): Promise<void> {
-    const req = inflight.get(info.intent.id);
+    const req = requestOf(info.intent);
     const to = req?.to ?? "";
     const amountUsdc = req ? fromUnits(req.amountUnits) : NaN;
     const ruleIds = info.decision.findings.map((f) => f.ruleId);
@@ -233,6 +261,20 @@ export async function createSignholdArm(opts: SignholdArmOptions): Promise<Signh
     }
   }
 
+  const onDecision = ({ decision, auditId, intent }: EscalationInfo) => {
+    const req = requestOf(intent);
+    verdicts.push({
+      intentId: intent.id,
+      auditId,
+      to: req?.to ?? "",
+      amountUsdc: req ? fromUnits(req.amountUnits) : NaN,
+      verdict: decision.verdict,
+      riskScore: decision.riskScore,
+      ruleIds: decision.findings.map((f) => f.ruleId),
+      checkLatencyMs: Math.round((latencies.get(intent.id) ?? 0) * 1000) / 1000,
+    });
+  };
+
   // ---- Mock signer: the thing that actually moves USDC on the ledger. Only reachable through guard(). ----
   const signer = {
     async sendTransaction(tx: { intentId: string; req: PaymentRequest }): Promise<string> {
@@ -255,22 +297,10 @@ export async function createSignholdArm(opts: SignholdArmOptions): Promise<Signh
     approval: "server",
     waitForApproval: { intervalMs: 50, timeoutMs: 10_000 },
     onEscalationPending: deviceDecide,
-    onDecision: ({ decision, auditId, intent }) => {
-      const req = inflight.get(intent.id);
-      verdicts.push({
-        intentId: intent.id,
-        auditId,
-        to: req?.to ?? "",
-        amountUsdc: req ? fromUnits(req.amountUnits) : NaN,
-        verdict: decision.verdict,
-        riskScore: decision.riskScore,
-        ruleIds: decision.findings.map((f) => f.ruleId),
-        checkLatencyMs: Math.round((latencies.get(intent.id) ?? 0) * 1000) / 1000,
-      });
-    },
+    onDecision,
   });
 
-  const executor: PaymentExecutor = async (req) => {
+  const referenceExecutor: PaymentExecutor = async (req) => {
     const intentId = globalThis.crypto.randomUUID();
     inflight.set(intentId, req);
     try {
@@ -278,15 +308,43 @@ export async function createSignholdArm(opts: SignholdArmOptions): Promise<Signh
       spentUsdInWindow += fromUnits(req.amountUnits);
       return { ok: true, txHash };
     } catch (err) {
-      if (err instanceof GuardBlockedError) return { ok: false, error: "blocked_by_signhold", message: `Payment blocked by the operator's transaction guard: ${err.decision.explanation}` };
-      if (err instanceof GuardEscalatedError || err instanceof ApprovalDeniedError || err instanceof ApprovalTimeoutError) {
-        return { ok: false, error: "escalation_not_approved", message: "Payment needs the operator's approval and was not approved." };
-      }
-      return { ok: false, error: "guard_error", message: `Payment could not be checked: ${err instanceof Error ? err.message : String(err)}` };
+      return outcomeFromGuardError(err);
     } finally {
       inflight.delete(intentId);
     }
   };
+
+  // ---- AgentKit framework: an EvmWalletProvider-shaped wallet over the ledger, wrapped by guardWalletProvider(). ----
+  // The agent's `pay` ends in `walletProvider.sendTransaction({ to: USDC, data: transfer(to, amount) })`, as
+  // AgentKit's erc20 transfer action does; the wrapper submits that request to the same in-process API first.
+  let walletProvider: GuardedEvmWalletProvider<LedgerEvmWalletProvider> | undefined;
+  let agentkitExecutor: PaymentExecutor | undefined;
+  if (framework === "agentkit") {
+    // The memo is not part of an AgentKit transaction request; it reaches the intent's `description`
+    // through the wrapper's `describe` hook (payments are sequential: one agent loop per arm).
+    let currentMemo: string | undefined;
+    walletProvider = guardWalletProvider(new LedgerEvmWalletProvider(currentLedger), client, {
+      context: () => ({ agentId, spentUsdInWindow, windowSeconds: 86_400 }),
+      waitForApproval: { intervalMs: 50, timeoutMs: 10_000 },
+      onEscalationPending: deviceDecide,
+      onDecision,
+      describe: () => currentMemo,
+    });
+    const wp = walletProvider;
+    agentkitExecutor = async (req) => {
+      currentMemo = req.memo || undefined;
+      try {
+        const txHash = await wp.sendTransaction(usdcTransferRequest(req.to, req.amountUnits));
+        spentUsdInWindow += fromUnits(req.amountUnits);
+        return { ok: true, txHash };
+      } catch (err) {
+        return outcomeFromGuardError(err);
+      } finally {
+        currentMemo = undefined;
+      }
+    };
+  }
+  const executor: PaymentExecutor = agentkitExecutor ?? referenceExecutor;
 
   // ---- Behavioral baseline: N routine, allowed invoice payments (through the API so only `allow` teaches). ----
   if (behavior) {
@@ -305,7 +363,9 @@ export async function createSignholdArm(opts: SignholdArmOptions): Promise<Signh
   }
 
   return {
+    framework,
     executor,
+    walletProvider,
     verdicts,
     escalations,
     policy,

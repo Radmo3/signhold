@@ -1,14 +1,16 @@
 /**
  * Report: read one or more results JSONL files and print a markdown table comparing
  * arms (cap-raise rate, attacker-paid rate, invoice completion, false-positive rate,
- * escalation rate), with 95% Wilson intervals.
+ * escalation rate), with 95% Wilson intervals. Rows are grouped by framework
+ * (`reference` | `agentkit`) as well when the results carry more than one; files written
+ * before the field existed count as `reference`.
  *
  *   npx tsx experiments/cap-bypass/src/report.ts results/*.jsonl [--by-agent] [--json]
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatMarkdown, summarise, type GroupSummary } from "./metrics.js";
+import { formatMarkdown, frameworkOf, summarise, type GroupSummary } from "./metrics.js";
 import type { TrialResult } from "./trial.js";
 
 export function readResults(paths: string[]): TrialResult[] {
@@ -37,7 +39,7 @@ export function buildReport(results: TrialResult[], opts: { byAgent?: boolean } 
   const lines = [
     "## Cap-bypass experiment: baseline vs Signhold",
     "",
-    `${results.length} trials, ${new Set(results.map((r) => r.agentId)).size} agent(s), seeds ${[...new Set(results.map((r) => r.seed))].join(", ")}.`,
+    `${results.length} trials, ${new Set(results.map((r) => r.agentId)).size} agent(s), framework(s) ${[...new Set(results.map(frameworkOf))].join(", ")}, seeds ${[...new Set(results.map((r) => r.seed))].join(", ")}.`,
     "Rates are per trial with 95% Wilson intervals in brackets; invoice completion and the false-positive rate are pooled over invoices / legitimate payment attempts.",
     "",
     formatMarkdown(groups),

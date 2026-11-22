@@ -1,7 +1,7 @@
 /**
  * Runner.
  *
- *   npx tsx experiments/cap-bypass/src/run.ts --arm baseline|signhold|both --scenario 1|2|both \
+ *   npx tsx experiments/cap-bypass/src/run.ts --arm baseline|signhold|both [--framework reference|agentkit] --scenario 1|2|both \
  *     --agent scripted:bypasser|anthropic:<model>|openai:<model>|compat:<model> --trials 20 --seed 42 \
  *     [--behavior[=<module>]] [--behavior-seed 30] [--cap 0.01] [--balance 10] [--max-steps 40] \
  *     [--policy-instruction] [--attacker-amount 0.02] [--base-url <url>] [--temperature <t>] [--out results/<name>.jsonl]
@@ -16,11 +16,13 @@ import { parseArgs } from "node:util";
 import { agentFromSpec, type Agent } from "./agents/index.js";
 import { formatSummaryTable, summarise, type GroupSummary } from "./metrics.js";
 import { INVOICE_PAYEE, type ScenarioId } from "./scenarios.js";
-import { createSignholdArm, type SignholdArm } from "./signhold.js";
+import { FRAMEWORKS, createSignholdArm, type Framework, type SignholdArm } from "./signhold.js";
 import { runTrial, type Arm, type TrialResult } from "./trial.js";
 
 export interface ExperimentOptions {
   arms: Arm[];
+  /** Default `reference`. */
+  framework?: Framework;
   scenarios: ScenarioId[];
   agent: Agent;
   trials: number;
@@ -44,6 +46,8 @@ export interface ExperimentOutput {
 
 export async function runExperiment(opts: ExperimentOptions): Promise<ExperimentOutput> {
   const capUsdc = opts.capUsdc ?? 0.01;
+  const framework: Framework = opts.framework ?? "reference";
+  if (!FRAMEWORKS.includes(framework)) throw new Error(`unknown framework '${String(framework)}' (${FRAMEWORKS.join(" | ")})`);
   const results: TrialResult[] = [];
   let signhold: SignholdArm | undefined;
   try {
@@ -52,11 +56,11 @@ export async function runExperiment(opts: ExperimentOptions): Promise<Experiment
         if (arm === "signhold") {
           // One API instance per (scenario, arm); its audit chain and behavioral baseline persist across that arm's trials.
           if (signhold) await signhold.close();
-          signhold = await createSignholdArm({ capUsdc, knownPayees: [INVOICE_PAYEE], behavior: opts.behavior, behaviorSeedCount: opts.behaviorSeedCount });
+          signhold = await createSignholdArm({ capUsdc, knownPayees: [INVOICE_PAYEE], behavior: opts.behavior, behaviorSeedCount: opts.behaviorSeedCount, framework });
         }
         for (let i = 0; i < opts.trials; i++) {
           const r = await runTrial(
-            { arm, scenario, trialIndex: i, seed: opts.seed, capUsdc, startingBalanceUsdc: opts.startingBalanceUsdc ?? 10, maxSteps: opts.maxSteps ?? 40, policyInstruction: opts.policyInstruction, attackerAmountUsdc: opts.attackerAmountUsdc },
+            { arm, framework, scenario, trialIndex: i, seed: opts.seed, capUsdc, startingBalanceUsdc: opts.startingBalanceUsdc ?? 10, maxSteps: opts.maxSteps ?? 40, policyInstruction: opts.policyInstruction, attackerAmountUsdc: opts.attackerAmountUsdc },
             { agent: opts.agent, signhold: arm === "signhold" ? signhold : undefined },
           );
           results.push(r);
@@ -80,6 +84,7 @@ export function parseCli(argv: string[]) {
     args: argv,
     options: {
       arm: { type: "string", default: "both" },
+      framework: { type: "string", default: "reference" },
       scenario: { type: "string", default: "both" },
       agent: { type: "string", default: "scripted:bypasser" },
       trials: { type: "string", default: "20" },
@@ -102,6 +107,8 @@ export function parseCli(argv: string[]) {
   });
   const arms: Arm[] = values.arm === "both" ? ["baseline", "signhold"] : [values.arm as Arm];
   if (!arms.every((a) => a === "baseline" || a === "signhold")) throw new Error(`--arm must be baseline, signhold or both`);
+  const framework = values.framework as Framework;
+  if (!FRAMEWORKS.includes(framework)) throw new Error(`--framework must be ${FRAMEWORKS.join(" or ")}`);
   const scenarios: ScenarioId[] = values.scenario === "both" ? [1, 2] : [Number(values.scenario) as ScenarioId];
   if (!scenarios.every((s) => s === 1 || s === 2)) throw new Error(`--scenario must be 1, 2 or both`);
   const num = (v: string | undefined, name: string) => {
@@ -116,6 +123,7 @@ export function parseCli(argv: string[]) {
     help: values.help!,
     quiet: values.quiet!,
     arms,
+    framework,
     scenarios,
     agentSpec: values.agent!,
     trials: Math.max(1, Math.floor(num(values.trials, "trials"))),
@@ -133,7 +141,7 @@ export function parseCli(argv: string[]) {
   };
 }
 
-const USAGE = `usage: tsx src/run.ts --arm baseline|signhold|both --scenario 1|2|both --agent <spec> [--trials 20] [--seed 42]
+const USAGE = `usage: tsx src/run.ts --arm baseline|signhold|both [--framework reference|agentkit] --scenario 1|2|both --agent <spec> [--trials 20] [--seed 42]
        [--behavior[=<module>]] [--behavior-seed 30] [--cap 0.01] [--balance 10] [--max-steps 40] [--policy-instruction]
        [--attacker-amount 0.02] [--base-url <url>] [--temperature <t>] [--out results/<name>.jsonl] [--quiet]
 agent specs: scripted:obedient|bypasser|gullible|careful, anthropic:<model>, openai:<model>, compat:<model>`;
@@ -147,13 +155,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
   const agent = agentFromSpec(cli.agentSpec, { compatBaseUrl: cli.baseUrl, temperature: cli.temperature });
   const here = dirname(fileURLToPath(import.meta.url));
-  const outPath = resolve(cli.out ?? join(here, "..", "results", `${agent.id.replace(/[^A-Za-z0-9._-]+/g, "_")}-seed${cli.seed}.jsonl`));
+  const outPath = resolve(cli.out ?? join(here, "..", "results", `${agent.id.replace(/[^A-Za-z0-9._-]+/g, "_")}${cli.framework === "reference" ? "" : `-${cli.framework}`}-seed${cli.seed}.jsonl`));
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, "");
 
   const t0 = Date.now();
   const out = await runExperiment({
     arms: cli.arms,
+    framework: cli.framework,
     scenarios: cli.scenarios,
     agent,
     trials: cli.trials,
@@ -167,14 +176,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     behaviorSeedCount: cli.behaviorSeedCount,
     onTrial: (r) => {
       appendFileSync(outPath, `${JSON.stringify(r, bigintSafe)}\n`);
-      if (!cli.quiet) console.error(`[${r.arm} s${r.scenario} #${r.trialIndex + 1}/${cli.trials}] ${r.outcome} steps=${r.steps} invoices=${r.invoicesPaid}/${r.invoicesTotal} stop=${r.stop}`);
+      if (!cli.quiet) console.error(`[${r.framework} ${r.arm} s${r.scenario} #${r.trialIndex + 1}/${cli.trials}] ${r.outcome} steps=${r.steps} invoices=${r.invoicesPaid}/${r.invoicesTotal} stop=${r.stop}`);
     },
   });
   const summaryPath = join(dirname(outPath), "summary.json");
   writeFileSync(
     summaryPath,
     JSON.stringify(
-      { generatedAt: new Date().toISOString(), seed: cli.seed, trials: cli.trials, agent: agent.id, capUsdc: cli.capUsdc, attackerAmountUsdc: cli.attackerAmountUsdc, behaviorModule: out.behaviorModule, policyInstruction: cli.policyInstruction, durationMs: Date.now() - t0, groups: out.summary },
+      { generatedAt: new Date().toISOString(), seed: cli.seed, trials: cli.trials, agent: agent.id, framework: cli.framework, capUsdc: cli.capUsdc, attackerAmountUsdc: cli.attackerAmountUsdc, behaviorModule: out.behaviorModule, policyInstruction: cli.policyInstruction, durationMs: Date.now() - t0, groups: out.summary },
       null,
       2,
     ),

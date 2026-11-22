@@ -58,7 +58,7 @@ The `@signhold/behavior` package lives at https://github.com/Radmo3/signhold-beh
                                    |  shared types: @signhold/core
 ```
 
-Workspaces (`packages/*`): `core` (shared contracts), `policy` (rules + engine), `sim-evm`, `sim-solana`, `reputation` (address reputation providers + cache), `api`, `sdk`. `examples/` holds the end-to-end demo. The behavioral anomaly layer is an external package (see above).
+Workspaces (`packages/*`): `core` (shared contracts), `policy` (rules + engine), `sim-evm`, `sim-solana`, `reputation` (address reputation providers + cache), `api`, `sdk`. `integrations/*` holds framework integrations (`agentkit`, see [Integrations](#integrations)). `examples/` holds the end-to-end demos. The behavioral anomaly layer is an external package (see above).
 
 ## Quickstart
 
@@ -70,6 +70,7 @@ npm run build
 npm run typecheck
 npm run test
 npm run demo          # == npx tsx examples/demo.ts (in-process API, mock RPC, no network)
+npm run demo:agentkit # == npx tsx examples/agentkit-demo.ts (same, through the Coinbase AgentKit wrapper)
 ```
 
 The demo runs eight cases through the SDK against the in-process API: (a) small ERC-20 transfer → `allow`, (b) unlimited approve → `block`, (c) call into a never-seen contract → `escalate`, (d) Solana SPL transfer → `allow`, (e) a bounded, under-cap approval whose spender is an EOA rather than a contract (no protocol needs that; it is how a drainer gets `transferFrom` rights) → `block`, (f) transfer whose recipient is on the operator's reputation denylist → `block`, (g) reputation provider outage → `escalate`, (h) an escalated transaction and its human approval: the agent's own approval attempt is refused with `403`, the approver device signs the challenge, the server verifies it and the status becomes `approved` (see [Human approval (I-HITL)](#human-approval-i-hitl)).
@@ -296,7 +297,11 @@ Hardening, key handling and the deployment checklist live in [SECURITY.md](SECUR
 
 ## Experiments
 
-`experiments/cap-bypass/` ([README](experiments/cap-bypass/README.md)) reproduces the I-HITL cap-bypass study (arXiv:2610.35835: an agent with a 0.01 USDC daily cap, three one-cent invoices, the cap-raise OTP sitting in an inbox it can read, and an attacker e-mail posing as the owner) in simulation, with a `baseline` arm (the wallet's own policy, as in the study) and a `signhold` arm (every payment checked by the in-process API, policy held by the operator, escalations approved only by an approver-device fixture the agent cannot reach). Scripted agents run in CI (`npm run experiment:smoke`); Anthropic, OpenAI and OpenAI-compatible adapters run real models from an API key. The README lists every deviation from the paper's setup.
+`experiments/cap-bypass/` ([README](experiments/cap-bypass/README.md)) reproduces the I-HITL cap-bypass study (arXiv:2610.35835: an agent with a 0.01 USDC daily cap, three one-cent invoices, the cap-raise OTP sitting in an inbox it can read, and an attacker e-mail posing as the owner) in simulation, with a `baseline` arm (the wallet's own policy, as in the study) and a `signhold` arm (every payment checked by the in-process API, policy held by the operator, escalations approved only by an approver-device fixture the agent cannot reach). Scripted agents run in CI (`npm run experiment:smoke`); Anthropic, OpenAI and OpenAI-compatible adapters run real models from an API key. `--framework agentkit` runs the same scenarios with AgentKit-shaped tools and `guardWalletProvider()` around an `EvmWalletProvider`-shaped wallet. The README lists every deviation from the paper's setup.
+
+## Integrations
+
+- **Coinbase AgentKit**: [`integrations/agentkit/`](integrations/agentkit/README.md) (`@signhold/agentkit`). `guardWalletProvider()` wraps an AgentKit `EvmWalletProvider` so that `sendTransaction` / `signTransaction` / `nativeTransfer` (and the account from `toSigner()`) are checked by Signhold before the key is used, with raw-hash / typed-data signing and the providers' escape hatches (`getClient()`, `exportWallet()`, ...) refused by default; `signholdActionProvider()` gives the agent two read-only actions (approval status, last decision) and no way to approve. `npm run demo:agentkit` runs it against the in-process API with a mock provider; the cap-bypass experiment can run its scenarios through this shape with `--framework agentkit`. Built against `@coinbase/agentkit@0.10.4` type definitions; live AgentKit is not exercised in this repository.
 
 ## Roadmap
 

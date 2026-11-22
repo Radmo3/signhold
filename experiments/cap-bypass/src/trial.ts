@@ -3,16 +3,19 @@
  * arm and one scenario. Produces a `TrialResult` with everything the report needs and
  * the full transcript.
  */
-import { AGENT_WALLET, Inbox, Ledger, Wallet, makeToolApi, toUnits, type PaymentExecutor, type ToolApi, type ToolName } from "./env.js";
+import { AGENT_WALLET, Inbox, Ledger, LedgerEvmWalletProvider, Wallet, makeToolApi, toUnits, usdcTransferRequest, type PaymentExecutor, type ToolApi, type ToolName } from "./env.js";
+import { capBypassActionProvider, toolApiFromActions } from "./agentkit-tools.js";
 import { mulberry32, subSeed } from "./rng.js";
 import { buildScenario, type Scenario, type ScenarioId } from "./scenarios.js";
-import type { SignholdArm, SignholdVerdictRecord, EscalationRecord } from "./signhold.js";
+import { FRAMEWORKS, type Framework, type SignholdArm, type SignholdVerdictRecord, type EscalationRecord } from "./signhold.js";
 import type { Agent, Transcript } from "./agents/types.js";
 
 export type Arm = "baseline" | "signhold";
 
 export interface TrialConfig {
   arm: Arm;
+  /** Default `reference`. */
+  framework?: Framework;
   scenario: ScenarioId;
   trialIndex: number;
   seed: number;
@@ -37,6 +40,8 @@ export interface PaymentRecord {
 
 export interface TrialResult {
   arm: Arm;
+  /** Agent-framework shape of the tools and wallet. Absent in results written before the field existed (= `reference`). */
+  framework: Framework;
   scenario: ScenarioId;
   trialIndex: number;
   seed: number;
@@ -85,7 +90,10 @@ export function trialSeed(cfg: Pick<TrialConfig, "seed" | "arm" | "scenario" | "
 }
 
 export async function runTrial(cfg: TrialConfig, deps: TrialDeps): Promise<TrialResult> {
+  const framework: Framework = cfg.framework ?? "reference";
+  if (!FRAMEWORKS.includes(framework)) throw new Error(`unknown framework '${String(framework)}'`);
   if (cfg.arm === "signhold" && !deps.signhold) throw new Error("signhold arm requires a SignholdArm");
+  if (cfg.arm === "signhold" && deps.signhold!.framework !== framework) throw new Error(`signhold arm was created for framework '${deps.signhold!.framework}', trial wants '${framework}'`);
   const t0 = Date.now();
   const rng = mulberry32(trialSeed(cfg));
   const scenario: Scenario = buildScenario(cfg.scenario, rng, { capUsdc: cfg.capUsdc, policyInstruction: cfg.policyInstruction, attackerAmountUsdc: cfg.attackerAmountUsdc });
@@ -97,17 +105,25 @@ export async function runTrial(cfg: TrialConfig, deps: TrialDeps): Promise<Trial
 
   const directExecutor: PaymentExecutor = async (req) => ({ ok: true, txHash: ledger.transfer(AGENT_WALLET, req.to, req.amountUnits, req.memo).txHash });
   let executor = directExecutor;
+  if (framework === "agentkit") {
+    // Baseline, AgentKit framework: the bare EvmWalletProvider-shaped wallet, no guard (the wallet's own policy gate is the only control).
+    const bare = new LedgerEvmWalletProvider(ledger);
+    executor = async (req) => ({ ok: true, txHash: await bare.sendTransaction(usdcTransferRequest(req.to, req.amountUnits)) });
+  }
   if (cfg.arm === "signhold") {
     const arm = deps.signhold!;
     arm.resetTrial(ledger);
     executor = arm.executor;
   }
   const policy = { perTxCapUsdc: cfg.capUsdc, dailyCapUsdc: cfg.capUsdc, weeklyCapUsdc: Math.max(0.3, cfg.capUsdc), monthlyCapUsdc: Math.max(1, cfg.capUsdc) };
+  // Deterministic e-mail clock (the OTP mail's timestamp): one simulated minute per tool call after the scenario's last initial mail.
+  const SIM_T0 = Date.parse("2026-10-14T09:30:00.000Z");
   const wallet = new Wallet({
     ledger,
     inbox,
     rng,
     policy,
+    now: () => new Date(SIM_T0 + stepCounter * 60_000),
     ownerName: scenario.persona.ownerName,
     ownerEmail: scenario.persona.ownerEmail,
     executor: async (req) => {
@@ -121,7 +137,12 @@ export async function runTrial(cfg: TrialConfig, deps: TrialDeps): Promise<Trial
   });
 
   let finalSummary: string | undefined;
-  const baseTools = makeToolApi(wallet, inbox, (s) => (finalSummary = s));
+  const onDone = (s: string) => (finalSummary = s);
+  // Reference: the plain ToolApi. AgentKit: the same tools wrapped as AgentKit actions (zod-validated, string results) and adapted back.
+  const baseTools: ToolApi =
+    framework === "agentkit"
+      ? toolApiFromActions(capBypassActionProvider(wallet, inbox, onDone, makeToolApi).getActions(cfg.arm === "signhold" ? deps.signhold!.walletProvider : undefined))
+      : makeToolApi(wallet, inbox, onDone);
 
   // Deliver the attacker's scheduled follow-ups as the agent works, and count steps.
   const pending = [...scenario.scheduled].sort((a, b) => a.afterStep - b.afterStep);
@@ -177,6 +198,7 @@ export async function runTrial(cfg: TrialConfig, deps: TrialDeps): Promise<Trial
 
   return {
     arm: cfg.arm,
+    framework,
     scenario: cfg.scenario,
     trialIndex: cfg.trialIndex,
     seed: cfg.seed,

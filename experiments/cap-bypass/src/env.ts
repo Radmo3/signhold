@@ -10,7 +10,7 @@
  * without `otp` it requests a code (which lands in the same inbox the agent reads),
  * with `otp` it applies the change.
  */
-import { encodeAbiParameters, encodeFunctionData, type Hex } from "viem";
+import { decodeFunctionData, encodeAbiParameters, encodeFunctionData, type Hex } from "viem";
 import { ERC20_ABI, type PublicClientLike } from "@signhold/sim-evm";
 import type { Rng } from "./rng.js";
 
@@ -406,4 +406,99 @@ export function makeToolApi(wallet: Wallet, inbox: Inbox, onDone: (summary: stri
 /** USDC `transfer(to, amount)` calldata for a payment, used to build the Signhold intent. */
 export function transferCalldata(to: string, amountUnits: bigint): Hex {
   return encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [to as `0x${string}`, amountUnits] });
+}
+
+// ---------------------------------------------------------------------------
+// AgentKit framework: an EvmWalletProvider-shaped wallet over the ledger
+// ---------------------------------------------------------------------------
+
+/** Decode USDC `transfer(to, amount)` calldata; `undefined` for anything else. */
+export function decodeTransferCalldata(data: unknown): { to: string; amountUnits: bigint } | undefined {
+  if (typeof data !== "string" || !/^0xa9059cbb[0-9a-fA-F]{128}$/.test(data)) return undefined;
+  try {
+    const decoded = decodeFunctionData({ abi: ERC20_ABI, data: data as Hex });
+    if (decoded.functionName !== "transfer") return undefined;
+    const [to, amount] = decoded.args as readonly [string, bigint];
+    return { to: lc(to), amountUnits: amount };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The simulated wallet in the exact shape of `@coinbase/agentkit`'s `EvmWalletProvider`
+ * (0.10.4): `sendTransaction(tx)` is the thing that moves USDC on the ledger, as a CDP /
+ * viem provider's would on Base. It only understands a USDC `transfer` (the one
+ * transaction the scenarios need); anything else, including raw-hash / message / typed-data
+ * signing, throws. In the `signhold` arm it is wrapped by `guardWalletProvider`.
+ */
+export class LedgerEvmWalletProvider {
+  #ledger: () => Ledger;
+  #address: string;
+  #nonce = 0;
+  /** Every call that reached the key, in order. */
+  readonly signed: Array<{ method: string; to: string; amountUnits: bigint }> = [];
+
+  constructor(ledger: Ledger | (() => Ledger), address = AGENT_WALLET) {
+    this.#ledger = typeof ledger === "function" ? ledger : () => ledger;
+    this.#address = lc(address);
+  }
+  getAddress(): string {
+    return this.#address;
+  }
+  getNetwork(): { protocolFamily: "evm"; networkId: string; chainId: string } {
+    return { protocolFamily: "evm", networkId: "base-mainnet", chainId: String(BASE_CHAIN_ID) };
+  }
+  getName(): string {
+    return "ledger_evm_wallet_provider";
+  }
+  async getBalance(): Promise<bigint> {
+    return 0n; // no native asset in the simulation
+  }
+  getPublicClient(): PublicClientLike {
+    return mockEvmClient(this.#ledger);
+  }
+  async readContract(params: { address: string; functionName: string; args?: readonly unknown[] }): Promise<unknown> {
+    if (lc(params.address) !== USDC_CONTRACT) throw new Error("unknown contract");
+    if (params.functionName === "balanceOf") return this.#ledger().balanceOf(String(params.args?.[0] ?? ""));
+    if (params.functionName === "decimals") return USDC_DECIMALS;
+    if (params.functionName === "symbol") return "USDC";
+    throw new Error(`unsupported read ${params.functionName}`);
+  }
+  async waitForTransactionReceipt(txHash: string): Promise<{ status: "success"; transactionHash: string }> {
+    return { status: "success", transactionHash: txHash };
+  }
+  async sendTransaction(tx: { to?: string | null; data?: string; value?: bigint | number | string }): Promise<string> {
+    if (!tx || typeof tx !== "object" || typeof tx.to !== "string" || lc(tx.to) !== USDC_CONTRACT) throw new Error("the simulated wallet only transacts with the USDC contract");
+    if (tx.value !== undefined && tx.value !== null && BigInt(tx.value as bigint | number | string) !== 0n) throw new Error("the simulated wallet holds no native asset");
+    const transfer = decodeTransferCalldata(tx.data);
+    if (!transfer) throw new Error("the simulated wallet only executes USDC transfer(to, amount)");
+    const t = this.#ledger().transfer(this.#address, transfer.to, transfer.amountUnits);
+    this.signed.push({ method: "sendTransaction", to: transfer.to, amountUnits: transfer.amountUnits });
+    this.#nonce++;
+    return t.txHash;
+  }
+  async signTransaction(tx: { to?: string | null; data?: string }): Promise<string> {
+    const transfer = decodeTransferCalldata(tx?.data);
+    if (!transfer || typeof tx.to !== "string" || lc(tx.to) !== USDC_CONTRACT) throw new Error("the simulated wallet only signs USDC transfer(to, amount)");
+    this.signed.push({ method: "signTransaction", to: transfer.to, amountUnits: transfer.amountUnits });
+    return `0xsigned${(++this.#nonce).toString(16).padStart(8, "0")}`;
+  }
+  async nativeTransfer(_to: string, _value: string): Promise<string> {
+    throw new Error("the simulated wallet holds no native asset");
+  }
+  async sign(_hash: string): Promise<string> {
+    throw new Error("raw hash signing is not part of the simulation");
+  }
+  async signMessage(_message: string | Uint8Array): Promise<string> {
+    throw new Error("message signing is not part of the simulation");
+  }
+  async signTypedData(_typedData: unknown): Promise<string> {
+    throw new Error("typed-data signing is not part of the simulation");
+  }
+}
+
+/** An `erc20ActionProvider.transfer`-style request: what the AgentKit-framework executor hands the wallet provider. */
+export function usdcTransferRequest(to: string, amountUnits: bigint): { to: string; data: Hex; value: bigint } {
+  return { to: USDC_CONTRACT, data: transferCalldata(to, amountUnits), value: 0n };
 }

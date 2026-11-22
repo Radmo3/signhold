@@ -20,6 +20,8 @@ export function wilson(k: number, n: number, z = 1.959963984540054): Rate {
 
 export interface GroupSummary {
   arm: string;
+  /** `reference` for results written before the field existed. */
+  framework: string;
   scenario: number;
   agentId: string;
   trials: number;
@@ -41,8 +43,10 @@ export interface GroupSummary {
   stops: Record<string, number>;
 }
 
-export function groupKey(r: Pick<TrialResult, "arm" | "scenario" | "agentId">): string {
-  return `${r.arm}|${r.scenario}|${r.agentId}`;
+export const frameworkOf = (r: Partial<Pick<TrialResult, "framework">>): string => r.framework ?? "reference";
+
+export function groupKey(r: Pick<TrialResult, "arm" | "scenario" | "agentId"> & Partial<Pick<TrialResult, "framework">>): string {
+  return `${frameworkOf(r)}|${r.arm}|${r.scenario}|${r.agentId}`;
 }
 
 export function summarise(results: TrialResult[]): GroupSummary[] {
@@ -71,6 +75,7 @@ export function summarise(results: TrialResult[]): GroupSummary[] {
     }
     out.push({
       arm: first.arm,
+      framework: frameworkOf(first),
       scenario: first.scenario,
       agentId: first.agentId,
       trials: n,
@@ -87,17 +92,22 @@ export function summarise(results: TrialResult[]): GroupSummary[] {
       stops,
     });
   }
-  return out.sort((a, b) => a.scenario - b.scenario || a.arm.localeCompare(b.arm) || a.agentId.localeCompare(b.agentId));
+  return out.sort((a, b) => a.scenario - b.scenario || a.framework.localeCompare(b.framework) || a.arm.localeCompare(b.arm) || a.agentId.localeCompare(b.agentId));
 }
 
 export const pct = (r: Rate): string => (Number.isNaN(r.rate) ? "n/a" : `${(r.rate * 100).toFixed(0)}% (${r.k}/${r.n})`);
 export const pctCi = (r: Rate): string => (Number.isNaN(r.rate) ? "n/a" : `${(r.rate * 100).toFixed(0)}% [${(r.ci95[0] * 100).toFixed(0)}–${(r.ci95[1] * 100).toFixed(0)}] ${r.k}/${r.n}`);
 
+/** Show the framework column only when more than one framework is present (keeps single-framework output unchanged). */
+const showFramework = (groups: GroupSummary[]): boolean => new Set(groups.map((g) => g.framework)).size > 1;
+
 /** Plain-text table (stdout). */
 export function formatSummaryTable(groups: GroupSummary[]): string {
-  const header = ["scenario", "arm", "agent", "n", "cap raised", "attacker paid", "invoices paid", "false pos.", "escalated", "verdicts a/b/e", "lat ms"];
+  const fw = showFramework(groups);
+  const header = ["scenario", ...(fw ? ["framework"] : []), "arm", "agent", "n", "cap raised", "attacker paid", "invoices paid", "false pos.", "escalated", "verdicts a/b/e", "lat ms"];
   const rows = groups.map((g) => [
     String(g.scenario),
+    ...(fw ? [g.framework] : []),
     g.arm,
     g.agentId,
     String(g.trials),
@@ -116,9 +126,11 @@ export function formatSummaryTable(groups: GroupSummary[]): string {
 
 /** Markdown table (report.ts). */
 export function formatMarkdown(groups: GroupSummary[]): string {
-  const header = ["Scenario", "Arm", "Agent", "Trials", "Cap raised", "Attacker paid", "Invoice completion", "False-positive rate", "Escalation rate", "Verdicts allow/block/escalate", "Device approved/rejected", "Mean check latency"];
+  const fw = showFramework(groups);
+  const header = ["Scenario", ...(fw ? ["Framework"] : []), "Arm", "Agent", "Trials", "Cap raised", "Attacker paid", "Invoice completion", "False-positive rate", "Escalation rate", "Verdicts allow/block/escalate", "Device approved/rejected", "Mean check latency"];
   const rows = groups.map((g) => [
     String(g.scenario),
+    ...(fw ? [g.framework] : []),
     g.arm,
     g.agentId,
     String(g.trials),

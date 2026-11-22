@@ -81,6 +81,19 @@ export class GuardEscalatedError extends SignholdClientError {
   }
 }
 
+/**
+ * Thrown by `guard()` when a method listed in `GuardOptions.deny` is called. What such a
+ * method would sign (a raw hash, EIP-712 typed data, an escape hatch to the underlying
+ * client) cannot be expressed as a TransactionIntent, so it cannot be checked, so it is
+ * refused outright. The signer is never reached.
+ */
+export class GuardUncheckableError extends SignholdClientError {
+  constructor(public readonly method: string, detail?: string) {
+    super(`${method}() is refused by Signhold guard: ${detail ?? "its input cannot be checked as a transaction intent"}`, "uncheckable");
+    this.name = "GuardUncheckableError";
+  }
+}
+
 /** `waitForApproval` gave up before the server reported `approved`. The transaction must not proceed. */
 export class ApprovalTimeoutError extends SignholdClientError {
   constructor(public readonly auditId: string, public readonly timeoutMs: number, public readonly lastStatus: ApprovalStatus | undefined) {

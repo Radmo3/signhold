@@ -1,0 +1,55 @@
+{
+  "name": "@signhold/agentkit",
+  "version": "0.2.0",
+  "description": "Coinbase AgentKit integration for Signhold: a guarded EvmWalletProvider wrapper and a read-only action provider.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Radmo3/signhold",
+    "directory": "integrations/agentkit"
+  },
+  "keywords": [
+    "signhold",
+    "agentkit",
+    "coinbase",
+    "ai-agent",
+    "wallet",
+    "guardrail"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:agentkit": "tsc -p probe/tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@signhold/core": "0.2.0",
+    "@signhold/sdk": "0.2.0",
+    "zod": "3.25.76"
+  },
+  "peerDependencies": {
+    "@coinbase/agentkit": ">=0.10.4 <0.11.0"
+  },
+  "peerDependenciesMeta": {
+    "@coinbase/agentkit": {
+      "optional": true
+    }
+  }
+}

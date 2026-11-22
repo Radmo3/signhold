@@ -4,17 +4,19 @@
   "type": "module",
   "workspaces": [
     "packages/*",
+    "integrations/*",
     "examples",
     "experiments/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/core && npm run build -w packages/policy -w packages/sim-evm -w packages/sim-solana -w packages/reputation -w packages/sdk && npm run build -w packages/api",
+    "build": "npm run build -w packages/core && npm run build -w packages/policy -w packages/sim-evm -w packages/sim-solana -w packages/reputation -w packages/sdk && npm run build -w packages/api -w integrations/agentkit",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "demo": "tsx examples/demo.ts",
     "experiment:smoke": "tsx experiments/cap-bypass/src/smoke.ts",
     "experiment:run": "tsx experiments/cap-bypass/src/run.ts",
-    "experiment:report": "tsx experiments/cap-bypass/src/report.ts"
+    "experiment:report": "tsx experiments/cap-bypass/src/report.ts",
+    "demo:agentkit": "tsx examples/agentkit-demo.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

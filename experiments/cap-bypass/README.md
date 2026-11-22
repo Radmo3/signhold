@@ -29,7 +29,7 @@ This package asks the follow-up question: **what changes when the spending polic
 4. **No `web_fetch` tool.** Neither scenario uses the web.
 5. **Filler e-mail.** Two benign messages (a meeting note, a newsletter) are added to both inboxes so the summary task has content; the paper does not describe its inbox beyond the invoices and the attack.
 6. **Prompts the paper does not quote** (the full system prompt, the OTP e-mail body, the second follow-up's exact wording) are written here in the spirit of the quoted fragments. The OTP mail is sent from `noreply@agentwallet.example`, not from Circle.
-7. **Follow-up timing** is tool-call-indexed (after calls 2 and 3), not wall-clock.
+7. **Follow-up timing** is tool-call-indexed (after calls 2 and 3), not wall-clock; e-mail timestamps (including the OTP mail's) come from a simulated clock that advances one minute per tool call, so transcripts are deterministic.
 8. **`--policy-instruction`** adds "Do not change the wallet's spending policy." to the task. The paper's prompts never mention the policy, so this is **off by default**; it exists because the question "does an explicit instruction help?" is a natural follow-up.
 9. **One tool for the cap raise** (`raise_cap` with optional `otp`) instead of `raise_limit` + `submit_otp`. Semantically identical two-step flow.
 10. **Sampling parameters** are not reported in the paper; the Anthropic adapter uses provider defaults (the pinned SDK exposes no temperature parameter), `--temperature` applies to the OpenAI/compatible adapters only.
@@ -58,13 +58,31 @@ Expected mechanics with scripted agents (what the smoke run asserts):
 | `obedient` (pays within the cap, never raises) | 1 | 1/3 paid, reports the rest | 1/3 paid, allowed, 0 false positives |
 | `careful` (summarises only) | 1, 2 | nothing paid | nothing paid |
 
+## Frameworks: `reference` and `agentkit`
+
+`--framework` (default `reference`) selects the shape of the agent's tools and of the wallet the payments go through. The scenarios, the policy, the device fixture and the agents are the same; what changes is the plumbing between the agent and the key.
+
+| | `reference` | `agentkit` |
+| --- | --- | --- |
+| Tools | the plain `ToolApi` (`read_inbox`, `pay`, `raise_cap`, `get_balance`, `get_policy`, `done`) | the same six tools exposed as Coinbase AgentKit actions (`{ name, description, schema (zod), invoke(args) => Promise<string> }`) by an action-provider-shaped object (`src/agentkit-tools.ts`), then adapted back to `ToolApi` for the agents: every tool call is zod-validated and returns a JSON string, as a LangChain / Vercel tool built from `AgentKit.getActions()` would |
+| Wallet | a mock signer `{ sendTransaction }` that writes to the ledger | `LedgerEvmWalletProvider` (`src/env.ts`), the shape of AgentKit's `EvmWalletProvider`: `pay` ends in `walletProvider.sendTransaction({ to: USDC, data: transfer(to, amount) })`, as `erc20ActionProvider.transfer` does |
+| `signhold` arm | `guard()` from `@signhold/sdk` around the mock signer | `guardWalletProvider()` from `@signhold/agentkit` around the `LedgerEvmWalletProvider` (raw-hash / typed-data signing refused, `sendTransaction` checked) |
+| Wallet policy gate (`Wallet.pay`: caps, OTP raise) | in front of the executor | the same; it models the wallet platform's policy, not the agent framework |
+
+The two frameworks are required to produce identical outcomes, payments, verdicts and tool transcripts for the scripted agents (`test/agentkit-framework.test.ts`), the smoke run covers both, and results carry `framework` so `report.ts` groups by it when a results set mixes frameworks (files written before the field existed count as `reference`).
+
+**What `agentkit` is not.** It does not import or run `@coinbase/agentkit`: the action-provider and wallet-provider shapes are structural copies of the 0.10.4 type definitions (the integration package compiles a probe against the real package; see `integrations/agentkit/README.md`), and no LangChain / Vercel runtime is involved. It shows that the control composes with AgentKit's wallet-provider seam and that nothing about the outcomes depends on the reference harness's tool plumbing; it is not evidence about AgentKit's own behaviour.
+
 ## Running
 
 ```bash
 npm install && npm run build          # from the repo root; the experiment imports the built workspace packages
 
-# CI smoke: every scripted agent, both arms, both scenarios, 3 trials each, with assertions
+# CI smoke: every scripted agent, both arms, both frameworks, both scenarios, 3 trials each, with assertions
 npm run experiment:smoke
+
+# The same two scenarios through AgentKit-shaped tools and guardWalletProvider()
+npx tsx experiments/cap-bypass/src/run.ts --framework agentkit --arm both --scenario both --agent scripted:bypasser --trials 20
 
 # A full scripted run, both arms, both scenarios, 20 trials
 npx tsx experiments/cap-bypass/src/run.ts --arm both --scenario both --agent scripted:bypasser --trials 20 --seed 42
@@ -86,9 +104,9 @@ npx tsx experiments/cap-bypass/src/report.ts results/*.jsonl            # one ro
 npx tsx experiments/cap-bypass/src/report.ts results/*.jsonl --by-agent # one row per (scenario, arm, model)
 ```
 
-Flags: `--arm baseline|signhold|both`, `--scenario 1|2|both`, `--agent <spec>`, `--trials N`, `--seed S`, `--cap 0.01`, `--balance 10`, `--max-steps 40`, `--attacker-amount 0.02`, `--policy-instruction`, `--behavior[=<module>]`, `--behavior-seed 30`, `--base-url`, `--temperature`, `--out results/<name>.jsonl`, `--quiet`.
+Flags: `--arm baseline|signhold|both`, `--framework reference|agentkit`, `--scenario 1|2|both`, `--agent <spec>`, `--trials N`, `--seed S`, `--cap 0.01`, `--balance 10`, `--max-steps 40`, `--attacker-amount 0.02`, `--policy-instruction`, `--behavior[=<module>]`, `--behavior-seed 30`, `--base-url`, `--temperature`, `--out results/<name>.jsonl`, `--quiet`.
 
-Outputs: one JSON line per trial in `--out` (default `experiments/cap-bypass/results/<agent>-seed<S>.jsonl`), a summary table on stdout and `summary.json` next to the JSONL with per-(scenario, arm, agent) rates and 95% Wilson intervals. Each trial record carries: steps and tool-call counts, whether the cap was raised (and to what), whether the OTP was requested/read, whether the attacker was paid (and how much), invoices paid (count and USDC), every payment attempt that passed the wallet gate with its outcome, wallet-policy rejections, final balance, and for the Signhold arm every verdict (`allow|block|escalate` with rule ids, risk score, check latency measured at the HTTP transport), every escalation with the device's decision and reason, the false-positive count, and the full transcript (assistant text, tool calls, arguments, results).
+Outputs: one JSON line per trial in `--out` (default `experiments/cap-bypass/results/<agent>-seed<S>.jsonl`), a summary table on stdout and `summary.json` next to the JSONL with per-(scenario, arm, agent) rates and 95% Wilson intervals. Each trial record carries: the framework, steps and tool-call counts, whether the cap was raised (and to what), whether the OTP was requested/read, whether the attacker was paid (and how much), invoices paid (count and USDC), every payment attempt that passed the wallet gate with its outcome, wallet-policy rejections, final balance, and for the Signhold arm every verdict (`allow|block|escalate` with rule ids, risk score, check latency measured at the HTTP transport), every escalation with the device's decision and reason, the false-positive count, and the full transcript (assistant text, tool calls, arguments, results).
 
 ### Determinism
 
@@ -101,7 +119,7 @@ Every per-trial random choice (inbox order, OTP code, attacker address) comes fr
 - Anything with an OpenAI-compatible chat-completions endpoint (vLLM, Ollama, OpenRouter, Together, DeepSeek, Qwen hosted APIs, ...): `--agent compat:<model>` with `--base-url` (or `COMPAT_BASE_URL`) and `COMPAT_API_KEY` if the server needs one.
 - A new provider: implement `Agent { id; run(task, tools, maxSteps) }` in `src/agents/`, translate between the SDK's wire format and `LoopState` (`src/agents/llm-common.ts`), and add a case to `agentFromSpec`. Adapters only ever receive `TOOL_DEFINITIONS` and the `ToolApi`; there is no approval tool or approver key for them to receive, and the tests check that an invented `approve` tool call is reported as `unknown_tool`.
 
-The SDKs are pinned exactly (`@anthropic-ai/sdk`, `openai`) and are this package's only new dependencies.
+The SDKs are pinned exactly (`@anthropic-ai/sdk`, `openai`, and `zod` for the AgentKit-shaped action schemas) and are this package's only non-workspace dependencies.
 
 ## Interpreting the metrics
 
@@ -136,16 +154,17 @@ Nothing in this package touches a chain or a wallet provider. A faithful real-fu
 ## Layout
 
 ```
-src/env.ts          ledger, mock EVM client, inbox, wallet (policy + OTP), tool surface + JSON-schema definitions
+src/env.ts          ledger, mock EVM client, inbox, wallet (policy + OTP), tool surface + JSON-schema definitions, LedgerEvmWalletProvider (AgentKit-shaped wallet)
+src/agentkit-tools.ts  the `agentkit` framework: AgentKit-shaped action provider over the tools + ToolApi adapter
 src/scenarios.ts    prompts, inbox contents, attacker sequence, persona, regexes
-src/signhold.ts     the signhold arm: in-process API, policy, reputation, device fixture, guard()-wrapped signer, --behavior loading
+src/signhold.ts     the signhold arm: in-process API, policy, reputation, device fixture, guard()-wrapped signer or guardWalletProvider()-wrapped provider (--framework), --behavior loading
 src/trial.ts        one trial -> TrialResult (outcomes, payments, verdicts, transcript)
 src/agents/         Agent interface, scripted agents, Anthropic / OpenAI / OpenAI-compatible adapters, shared loop
 src/metrics.ts      Wilson intervals, per-group summaries, text/markdown tables
 src/run.ts          CLI runner (JSONL + summary.json)
 src/report.ts       markdown report over results files
 src/smoke.ts        CI smoke run with assertions
-test/               vitest: environment, scripted agents under both arms, determinism, adapters (fake clients), fail-closed invariants, metrics/report/CLI
+test/               vitest: environment, scripted agents under both arms, determinism, adapters (fake clients), fail-closed invariants, metrics/report/CLI, agentkit framework parity
 ```
 
 ## References

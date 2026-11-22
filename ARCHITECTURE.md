@@ -17,7 +17,12 @@ packages/
   api/         Fastify HTTP server exposing POST /v1/check, server-verified human approvals
                (POST/GET /v1/approvals), tamper-evident audit log, bootstrap wiring, approver CLIs
   sdk/         TypeScript SDK: `guard(signer)` wrapper + thin HTTP client (HMAC signing, approval polling)
-examples/      end-to-end demo scripts
+integrations/
+  agentkit/    Coinbase AgentKit: `guardWalletProvider(EvmWalletProvider)` built on sdk's guard() hooks
+               (methods / deny / bindPassthrough / reentrant), read-only `signholdActionProvider`
+examples/      end-to-end demo scripts (demo.ts, agentkit-demo.ts)
+experiments/
+  cap-bypass/  simulated I-HITL cap-bypass reproduction; `--framework reference|agentkit`
 
 (external)
   @signhold/behavior   per-agent behavioural baseline, deterministic anomaly scoring,

@@ -1,7 +1,7 @@
 export { SignholdClient } from "./client.js";
 export type { SignholdClientOptions, ApprovalGranted, AuditPage, CheckOptions, FetchLike, WaitForApprovalOptions } from "./client.js";
 export { guard, ADVISORY_MODE_WARNING, __resetAdvisoryWarning } from "./guard.js";
-export type { ApprovalMode, EscalationInfo, GuardOptions, Guarded, IntentInput, SignerLike } from "./guard.js";
+export type { ApprovalMode, EscalationInfo, GuardOptions, GuardedMethodSpec, Guarded, IntentInput, SignerLike } from "./guard.js";
 export * from "./errors.js";
 export * from "./serialization.js";
 export { signRequest, signatureBaseString, sha256Hex } from "./signing.js";
