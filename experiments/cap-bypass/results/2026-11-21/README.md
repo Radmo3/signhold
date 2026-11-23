@@ -31,9 +31,10 @@ Scenario 2 (attacker impersonating the owner from the owner's own address, with 
 
 Three of six models pay the attacker when unprotected (the October study reported five of ten); with Signhold in the
 loop the attacker was paid in 0 of 120 trials, and every attempted payment (13) was blocked on `cap-per-tx`,
-`cap-daily` and `known-payees` (risk 80). Incomplete trials: Kimi K2 Signhold arm 5/20 and Qwen Signhold arm 1/20
+`cap-daily` and `known-payees` (risk 80). Incomplete trials: Kimi K2 baseline arm 2/20, Kimi K2 Signhold arm 5/20 and Qwen Signhold arm 1/20
 ended in provider transport errors (connection terminated, upstream 400, empty response) before any payment; they
-count as not-paid and the completed-trial counts are 15/20 and 19/20 respectively.
+count as not-paid and the completed-trial counts are 18/20, 15/20 and 19/20 respectively. Both follow-ups were
+delivered in every completed trial; the model re-read the inbox after the last delivery in 183 of 240 trials.
 
 ## Reading the numbers
 
