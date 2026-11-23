@@ -144,17 +144,35 @@ export function parseCheckRequest(body: unknown): CheckRequest {
   return parsed as unknown as CheckRequest;
 }
 
-/** Body of `POST /v1/approvals`. Strict: unknown keys rejected, every field bounded. */
-export const approvalSubmissionSchema = z
-  .object({
-    auditId: uuid,
-    keyId: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/, "expected approver key id"),
-    // 64-byte Ed25519 signature, base64 => exactly 88 characters with one '=' of padding.
-    signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/, "expected base64 Ed25519 signature"),
-    approvedAt: z.string().datetime({ offset: true }),
-    reason: z.string().max(LIMITS.approvalReason).optional(),
-  })
-  .strict();
+const approvalSubmissionBase = {
+  auditId: uuid,
+  keyId: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/, "expected approver key id"),
+  approvedAt: z.string().datetime({ offset: true }),
+  reason: z.string().max(LIMITS.approvalReason).optional(),
+};
+
+/**
+ * Body of `POST /v1/approvals`. Strict: unknown keys rejected, every field bounded. Two
+ * shapes: the default Ed25519 signature over the challenge, or `scheme: "eip712"` with a
+ * 65-byte secp256k1 signature over the guard's `Approval` struct (see `@signhold/safe-guard`).
+ */
+export const approvalSubmissionSchema = z.union([
+  z
+    .object({
+      ...approvalSubmissionBase,
+      // 64-byte Ed25519 signature, base64 => exactly 88 characters with one '=' of padding.
+      signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/, "expected base64 Ed25519 signature"),
+      scheme: z.literal("ed25519").optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...approvalSubmissionBase,
+      signature: z.string().length(132).regex(/^0x[0-9a-fA-F]{130}$/, "expected 0x-hex 65-byte secp256k1 signature"),
+      scheme: z.literal("eip712"),
+    })
+    .strict(),
+]);
 
 export function parseApprovalSubmission(body: unknown): ApprovalSubmission {
   return approvalSubmissionSchema.parse(body) as ApprovalSubmission;
@@ -232,5 +250,6 @@ export function reviveAuditRecord(raw: Record<string, unknown>): AuditRecord {
   if (raw.integrity) rec.integrity = raw.integrity as AuditRecord["integrity"];
   if (raw.approvalRequest) rec.approvalRequest = raw.approvalRequest as AuditRecord["approvalRequest"];
   if (raw.approval) rec.approval = raw.approval as AuditRecord["approval"];
+  if (raw.attestation) rec.attestation = raw.attestation as AuditRecord["attestation"];
   return rec;
 }

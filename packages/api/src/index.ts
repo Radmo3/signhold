@@ -6,6 +6,7 @@ export type { BootstrapEnv, BootstrapResult } from "./bootstrap.js";
 export * from "./serialization.js";
 export * from "./auth.js";
 export * from "./approvals.js";
+export * from "./attestations.js";
 export * from "./integrity.js";
 export * from "./breaker.js";
 export { createRedactingLogger, redactObject, DEFAULT_REDACT_KEYS } from "./logger.js";

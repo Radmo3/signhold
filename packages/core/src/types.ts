@@ -125,10 +125,12 @@ export interface ChainAdapter {
 /**
  * What an audit record documents. `check` is a policy decision; `approval` and
  * `approval_rejected` are the server-verified outcome of a human approval attempt
- * against an earlier `escalate` check (see `ApprovalAuditData`). Absent = `check`
- * (records written before approvals existed).
+ * against an earlier `escalate` check (see `ApprovalAuditData`); `attestation` and
+ * `attestation_refused` record the service signing (or refusing to sign) an on-chain
+ * attestation of a check's verdict for a Safe transaction (see `AttestationAuditData`).
+ * Absent = `check` (records written before approvals existed).
  */
-export type AuditRecordType = "check" | "approval" | "approval_rejected";
+export type AuditRecordType = "check" | "approval" | "approval_rejected" | "attestation" | "attestation_refused";
 
 /**
  * Attached to an `escalate` check record when server-side human approval is
@@ -160,6 +162,37 @@ export interface ApprovalAuditData {
   reason?: string;
   /** Coarse server-side reason for a rejection (never returned over HTTP; audit only). */
   rejectionReason?: string;
+  /** Signature scheme the device used. Absent = `ed25519`. */
+  scheme?: ApprovalScheme;
+}
+
+/**
+ * Carried by `attestation` / `attestation_refused` records: the service's EIP-712
+ * `Attestation` for a Safe transaction hash (consumed by `SignholdGuard.sol`), or why it
+ * refused to sign one. `block` decisions are never attested: their absence on-chain is
+ * what blocks them.
+ */
+export interface AttestationAuditData {
+  /** `id` of the `check` record whose verdict was attested. */
+  checkAuditId: string;
+  outcome: "attested" | "refused";
+  /** The Safe (`intent.from`) and the guard contract whose EIP-712 domain the signature is bound to. */
+  safe: string;
+  guard: string;
+  chainId: string;
+  /** `Safe.getTransactionHash(...)` of the exact transaction, as recomputed by the service. */
+  safeTxHash: string;
+  /** Verdict code as attested: 1 = allow, 2 = escalate. Absent on refusals. */
+  verdictCode?: 1 | 2;
+  /** Unix seconds after which the guard refuses the attestation. */
+  expiresAt?: string;
+  /** `sha256(utf8(checkAuditId))`, the bytes32 the guard stores. */
+  auditIdBytes32?: string;
+  /** The attestor address (never the key) and its signature, so the chain can be audited against the contract. */
+  attestor?: string;
+  signature?: string;
+  /** Coarse server-side reason for a refusal (never returned over HTTP; audit only). */
+  refusalReason?: string;
 }
 
 export interface AuditRecord {
@@ -178,6 +211,8 @@ export interface AuditRecord {
   approvalRequest?: ApprovalRequest;
   /** On `approval` / `approval_rejected` records: what was (not) approved. */
   approval?: ApprovalAuditData;
+  /** On `attestation` / `attestation_refused` records: what was (not) attested for on-chain enforcement. */
+  attestation?: AttestationAuditData;
 }
 
 export interface CheckRequest {
@@ -198,15 +233,69 @@ export interface CheckResponse {
   approval?: { challenge: string; expiresAt: string };
 }
 
+/**
+ * How an approval was signed. `ed25519` (default): base64 Ed25519 signature over the UTF-8
+ * challenge. `eip712`: 0x-hex secp256k1 signature over the `SignholdGuard` EIP-712 `Approval`
+ * struct for the Safe transaction the service attested for this audit id, so the same device
+ * signature satisfies both `POST /v1/approvals` and the on-chain guard.
+ */
+export type ApprovalScheme = "ed25519" | "eip712";
+
 /** Body of `POST /v1/approvals`: produced by the trusted approver device, never by the agent. */
 export interface ApprovalSubmission {
   auditId: string;
   keyId: string;
-  /** base64 Ed25519 signature over the UTF-8 bytes of the hex challenge. */
+  /** base64 Ed25519 signature over the UTF-8 bytes of the hex challenge, or (scheme `eip712`) a 0x-hex secp256k1 signature. */
   signature: string;
-  /** ISO timestamp asserted by the device; must fall inside the approval window. */
+  /** ISO timestamp asserted by the device; must fall inside the approval window. Whole seconds for `eip712`. */
   approvedAt: string;
   reason?: string;
+  scheme?: ApprovalScheme;
+}
+
+/** Safe transaction fields as sent to `POST /v1/attestations` (bigints as decimal strings over HTTP). */
+export interface SafeTxFields {
+  to: string;
+  value: string | bigint;
+  data: string;
+  operation: number;
+  safeTxGas: string | bigint;
+  baseGas: string | bigint;
+  gasPrice: string | bigint;
+  gasToken: string;
+  refundReceiver: string;
+  nonce: string | bigint;
+}
+
+/** Body of `POST /v1/attestations`: the agent asks the service to attest a check's verdict for an exact Safe transaction. */
+export interface AttestationRequest {
+  auditId: string;
+  safe: string;
+  guard: string;
+  chainId: number | string;
+  safeTx: SafeTxFields;
+  /** Optional cross-check: refused when it differs from the hash the service computes. */
+  safeTxHash?: string;
+}
+
+/** Body of a `200` from `POST /v1/attestations`. */
+export interface AttestationResponse {
+  auditId: string;
+  attestationAuditId: string;
+  safe: string;
+  guard: string;
+  chainId: string;
+  safeTxHash: string;
+  verdict: "allow" | "escalate";
+  verdictCode: 1 | 2;
+  /** ISO timestamp. */
+  expiresAt: string;
+  /** Unix seconds as a decimal string: the `expiresAt` the guard verifies. */
+  expiresAtUnix: string;
+  auditIdBytes32: string;
+  attestor: string;
+  /** 65-byte secp256k1 signature, 0x-hex. */
+  signature: string;
 }
 
 export type ApprovalStatus = "pending" | "approved" | "expired" | "rejected" | "unknown";

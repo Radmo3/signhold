@@ -531,7 +531,7 @@ describe("approver tooling (the 'trusted device') end to end", () => {
     expect(okRun.stdout).toContain("approvals: 1 approved, 1 rejected attempt(s)");
     expect(okRun.stdout).toMatch(/seq=1 approval\s+-> check seq=0 key=ops-phone at=/);
     expect(okRun.stdout).toMatch(/seq=2 approval_rejected -> check seq=0 key=ops-phone reason=already_used/);
-    expect(okRun.stdout).toContain("OK: audit chain verified; approval provenance intact");
+    expect(okRun.stdout).toContain("OK: audit chain verified; approval and attestation provenance intact");
     const asJson = await execFileP(tsx, [script("verify-audit.ts"), auditFile, "--json"]);
     expect(JSON.parse(asJson.stdout).approvals).toHaveLength(2);
 

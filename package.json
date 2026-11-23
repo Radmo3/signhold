@@ -5,18 +5,21 @@
   "workspaces": [
     "packages/*",
     "integrations/*",
+    "contracts/*",
     "examples",
     "experiments/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/core && npm run build -w packages/policy -w packages/sim-evm -w packages/sim-solana -w packages/reputation -w packages/sdk && npm run build -w packages/api -w integrations/agentkit",
+    "build": "npm run build -w packages/core && npm run build -w packages/policy -w packages/sim-evm -w packages/sim-solana -w packages/reputation -w packages/sdk -w contracts/safe-guard && npm run build -w packages/api -w integrations/agentkit",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "demo": "tsx examples/demo.ts",
     "experiment:smoke": "tsx experiments/cap-bypass/src/smoke.ts",
     "experiment:run": "tsx experiments/cap-bypass/src/run.ts",
     "experiment:report": "tsx experiments/cap-bypass/src/report.ts",
-    "demo:agentkit": "tsx examples/agentkit-demo.ts"
+    "demo:agentkit": "tsx examples/agentkit-demo.ts",
+    "test:contracts": "npm run test -w contracts/safe-guard",
+    "demo:safe-guard": "tsx examples/safe-guard-demo.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

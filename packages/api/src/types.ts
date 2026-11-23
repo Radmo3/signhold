@@ -11,6 +11,7 @@ import type {
 } from "@signhold/core";
 import type { KeyObject } from "node:crypto";
 import type { ApproverKeyConfig } from "./approvals.js";
+import type { AttestorOptions } from "./attestations.js";
 import type { ApiKeyConfig } from "./auth.js";
 import type { CircuitBreakerOptions } from "./breaker.js";
 
@@ -173,6 +174,13 @@ export interface ServerOptions {
     /** Clock (tests). */
     now?: () => number;
   };
+  /**
+   * On-chain enforcement (contracts/safe-guard): the secp256k1 attestor key whose EIP-712
+   * `Attestation` a `SignholdGuard` verifies before a Safe may execute a transaction. Enables
+   * `POST /v1/attestations`. Distinct from the Ed25519 audit key and refused as an approver.
+   * Unset => the route answers 404 and the service attests nothing.
+   */
+  attestor?: AttestorOptions;
   /** Pino logger options (`{ level, stream }`), `false` to silence. Defaults to info level. */
   logger?: boolean | { level?: string; stream?: { write(s: string): unknown }; redactKeys?: readonly string[] };
   /** Grace period for in-flight requests on close. Default 10 s. */

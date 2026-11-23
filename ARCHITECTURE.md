@@ -20,7 +20,13 @@ packages/
 integrations/
   agentkit/    Coinbase AgentKit: `guardWalletProvider(EvmWalletProvider)` built on sdk's guard() hooks
                (methods / deny / bindPassthrough / reentrant), read-only `signholdActionProvider`
-examples/      end-to-end demo scripts (demo.ts, agentkit-demo.ts)
+contracts/
+  safe-guard/  on-chain enforcement for Safe wallets: `SignholdGuard.sol` (Safe transaction guard that
+               requires the service's EIP-712 attestation of the verdict for the exact Safe tx hash and,
+               for escalations / sensitive txs, a device-signed EIP-712 approval; secp256k1 or P-256 via
+               RIP-7212), Hardhat 3 + viem tests against a real Safe 1.5.0, TS helpers (Safe tx hashing,
+               typed data, attestor, device approval flow with trusted display, viem submit helpers)
+examples/      end-to-end demo scripts (demo.ts, agentkit-demo.ts, safe-guard-demo.ts)
 experiments/
   cap-bypass/  simulated I-HITL cap-bypass reproduction; `--framework reference|agentkit`
 
@@ -70,6 +76,22 @@ approver device → POST /v1/approvals { auditId, keyId, signature(Ed25519 over 
       → any check fails: burn the pending challenge, audit.record(type "approval_rejected", rejectionReason)
             → 403 approval_rejected (generic body; reason only in logs + audit)
 agent          → GET /v1/approvals/:auditId → { status: pending|approved|expired|rejected|unknown }   (read-only; SDK polls it)
+
+On-chain enforcement (Safe wallets with SignholdGuard; contracts/safe-guard):
+
+agent          → POST /v1/attestations { auditId, safe, guard, chainId, safeTx, safeTxHash? }
+      → record is a `check` with verdict allow|escalate (block => 403, never signed)
+      → safe == intent.from, chainId/to/value/data == the audited intent, plain call, no gas refund, guard allowlisted
+      → safeTxHash = Safe.getTransactionHash(...) recomputed server-side
+      → attestor.signTypedData(Attestation{safe, safeTxHash, verdict 1|2, expiresAt, sha256(auditId)}) under the guard's EIP-712 domain
+      → audit.record(type "attestation") (failure => 503, nothing returned); remembered for eip712 approvals
+      → response { verdict, verdictCode, safeTxHash, expiresAtUnix, auditIdBytes32, attestor, signature, attestationAuditId }
+      → any failure: audit.record(type "attestation_refused", refusalReason) → 403 attestation_refused
+agent          → guard.submitAttestation(...)   (anyone may relay; the guard checks the attestor signature)
+approver device→ fetch record, recompute challenge + safeTxHash, display, confirm, sign Approval{safe, safeTxHash, auditId, approvedAt}
+               → POST /v1/approvals { ..., scheme: "eip712" } (verified against the issued attestation)  and  guard.submitApproval(...)
+agent          → Safe.execTransaction(owner sig) → guard.checkTransaction: attested & unexpired; escalate / to==safe / to==guard /
+                 delegatecall / refund => approval present & unused => consumed; checkAfterExecution clears the entries
 ```
 
 The agent process holds an API key only. It can submit checks, read approval
@@ -94,9 +116,12 @@ All packages import types from `@signhold/core`. Do NOT redefine them.
 Key types: `Chain`, `TransactionIntent`, `SimulationResult`, `AssetDelta`,
 `ApprovalChange`, `PolicyRule`, `PolicySet`, `Decision`, `Verdict`,
 `ChainAdapter`, `AgentContext`, `AuditRecord` (`type`: `check` |
-`approval` | `approval_rejected`; `approvalRequest`, `approval`),
-`AuditIntegrity`, `CheckResponse.approval`, `ApprovalSubmission`,
-`ApprovalStatusResponse`. `computeApprovalChallenge` lives in core so the
+`approval` | `approval_rejected` | `attestation` | `attestation_refused`;
+`approvalRequest`, `approval`, `attestation`), `AuditIntegrity`,
+`CheckResponse.approval`, `ApprovalSubmission` (`scheme`: `ed25519` | `eip712`),
+`ApprovalStatusResponse`, `AttestationRequest`, `AttestationResponse`.
+The EIP-712 structs the guard verifies live in `@signhold/safe-guard`
+(`typedData.ts`), which `api` imports; `core` stays dependency-free. `computeApprovalChallenge` lives in core so the
 approver tooling can recompute a challenge from a sealed record independently
 of the server.
 

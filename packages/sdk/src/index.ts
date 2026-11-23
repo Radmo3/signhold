@@ -10,6 +10,8 @@ export type {
   AgentContext,
   ApprovalStatus,
   ApprovalStatusResponse,
+  AttestationRequest,
+  AttestationResponse,
   AuditRecord,
   CheckRequest,
   CheckResponse,

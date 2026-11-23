@@ -14,7 +14,7 @@ import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { KeyObject } from "node:crypto";
 import type { AuditRecord } from "@signhold/core";
-import { summarizeApprovals, type ApprovalProvenance } from "../src/approvals.js";
+import { summarizeApprovals, summarizeAttestations, type ApprovalProvenance, type AttestationProvenance } from "../src/approvals.js";
 import { keyIdOf, loadEd25519PublicKey, verifyChain, type VerifyResult } from "../src/integrity.js";
 import { reviveAuditRecord } from "../src/serialization.js";
 
@@ -101,10 +101,12 @@ async function main(): Promise<void> {
 
   const approvals: ApprovalProvenance[] = summarizeApprovals(records);
   const approvalProblems = approvals.filter((a) => a.problems.length > 0);
-  const ok = result.ok && approvalProblems.length === 0;
+  const attestations: AttestationProvenance[] = summarizeAttestations(records);
+  const attestationProblems = attestations.filter((a) => a.problems.length > 0);
+  const ok = result.ok && approvalProblems.length === 0 && attestationProblems.length === 0;
 
   if (args.json) {
-    console.log(JSON.stringify({ ...result, ok, approvals }, null, 2));
+    console.log(JSON.stringify({ ...result, ok, approvals, attestations }, null, 2));
   } else {
     console.log(`records checked: ${result.checked}  signed: ${result.signedCount}  range: ${result.firstSeq ?? "-"}..${result.lastSeq ?? "-"}`);
     if (result.lastHash) console.log(`head hash: ${result.lastHash}`);
@@ -118,11 +120,22 @@ async function main(): Promise<void> {
       const problems = a.problems.length ? `  !! ${a.problems.join(",")}` : "";
       console.log(`  seq=${a.seq ?? "-"} ${a.type.padEnd(17)} -> ${link}${who}${when}${why}${problems}`);
     }
-    if (ok) console.log("OK: audit chain verified; approval provenance intact");
+    if (attestations.length > 0) {
+      const attested = attestations.filter((a) => a.type === "attestation").length;
+      console.log(`attestations (on-chain enforcement): ${attested} attested, ${attestations.length - attested} refused`);
+      for (const a of attestations) {
+        const link = a.checkSeq !== undefined ? `check seq=${a.checkSeq}` : `check ${a.checkAuditId} (not in range)`;
+        const what = a.type === "attestation" ? ` verdict=${a.verdictCode === 1 ? "allow" : "escalate"} safe=${a.safe} chain=${a.chainId} safeTxHash=${a.safeTxHash}` : ` reason=${a.refusalReason}`;
+        const problems = a.problems.length ? `  !! ${a.problems.join(",")}` : "";
+        console.log(`  seq=${a.seq ?? "-"} ${a.type.padEnd(19)} -> ${link}${what}${problems}`);
+      }
+    }
+    if (ok) console.log("OK: audit chain verified; approval and attestation provenance intact");
     else {
-      console.error(`FAIL: ${result.failures.length + approvalProblems.length} problem(s)`);
+      console.error(`FAIL: ${result.failures.length + approvalProblems.length + attestationProblems.length} problem(s)`);
       for (const f of result.failures) console.error(`  seq=${f.seq} id=${f.id} ${f.reason}${f.detail ? ` (${f.detail})` : ""}`);
       for (const a of approvalProblems) console.error(`  seq=${a.seq ?? "-"} id=${a.recordId} ${a.type}: ${a.problems.join(", ")}`);
+      for (const a of attestationProblems) console.error(`  seq=${a.seq ?? "-"} id=${a.recordId} ${a.type}: ${a.problems.join(", ")}`);
     }
   }
   process.exit(ok ? 0 : 1);

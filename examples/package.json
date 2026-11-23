@@ -7,7 +7,8 @@
   "scripts": {
     "demo": "tsx demo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "demo:agentkit": "tsx agentkit-demo.ts"
+    "demo:agentkit": "tsx agentkit-demo.ts",
+    "demo:safe-guard": "tsx safe-guard-demo.ts"
   },
   "dependencies": {
     "@signhold/agentkit": "0.2.0",
@@ -20,6 +21,11 @@
     "@signhold/sim-solana": "0.2.0",
     "@solana/spl-token": "^0.4.8",
     "@solana/web3.js": "^1.95.0",
-    "viem": "^2.21.0"
+    "viem": "^2.21.0",
+    "@signhold/safe-guard": "0.2.0"
+  },
+  "devDependencies": {
+    "hardhat": "3.21.2",
+    "@nomicfoundation/hardhat-viem": "3.1.0"
   }
 }

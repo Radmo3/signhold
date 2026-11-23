@@ -58,7 +58,7 @@ The `@signhold/behavior` package lives at https://github.com/Radmo3/signhold-beh
                                    |  shared types: @signhold/core
 ```
 
-Workspaces (`packages/*`): `core` (shared contracts), `policy` (rules + engine), `sim-evm`, `sim-solana`, `reputation` (address reputation providers + cache), `api`, `sdk`. `integrations/*` holds framework integrations (`agentkit`, see [Integrations](#integrations)). `examples/` holds the end-to-end demos. The behavioral anomaly layer is an external package (see above).
+Workspaces (`packages/*`): `core` (shared contracts), `policy` (rules + engine), `sim-evm`, `sim-solana`, `reputation` (address reputation providers + cache), `api`, `sdk`. `integrations/*` holds framework integrations (`agentkit`, see [Integrations](#integrations)). `contracts/*` holds on-chain enforcement (`safe-guard`, see [Enforcement](#enforcement-safe-guard)). `examples/` holds the end-to-end demos. The behavioral anomaly layer is an external package (see above).
 
 ## Quickstart
 
@@ -69,8 +69,10 @@ npm install
 npm run build
 npm run typecheck
 npm run test
-npm run demo          # == npx tsx examples/demo.ts (in-process API, mock RPC, no network)
-npm run demo:agentkit # == npx tsx examples/agentkit-demo.ts (same, through the Coinbase AgentKit wrapper)
+npm run demo            # == npx tsx examples/demo.ts (in-process API, mock RPC, no network)
+npm run demo:agentkit   # == npx tsx examples/agentkit-demo.ts (same, through the Coinbase AgentKit wrapper)
+npm run demo:safe-guard # == npx tsx examples/safe-guard-demo.ts (in-process Hardhat chain, real Safe 1.5.0 + SignholdGuard, in-process API)
+npm run test:contracts  # Hardhat + viem tests of the guard, with a gas report
 ```
 
 The demo runs eight cases through the SDK against the in-process API: (a) small ERC-20 transfer → `allow`, (b) unlimited approve → `block`, (c) call into a never-seen contract → `escalate`, (d) Solana SPL transfer → `allow`, (e) a bounded, under-cap approval whose spender is an EOA rather than a contract (no protocol needs that; it is how a drainer gets `transferFrom` rights) → `block`, (f) transfer whose recipient is on the operator's reputation denylist → `block`, (g) reputation provider outage → `escalate`, (h) an escalated transaction and its human approval: the agent's own approval attempt is refused with `403`, the approver device signs the challenge, the server verifies it and the status becomes `approved` (see [Human approval (I-HITL)](#human-approval-i-hitl)).
@@ -84,6 +86,9 @@ export SIGNHOLD_API_KEYS=ops-bot:secret-1,treasury:secret-2  # id:key pairs; req
 export SIGNHOLD_AUDIT_SIGNING_KEY=<ed25519 seed hex|base64|pkcs8 pem>  # required in production; dev generates an ephemeral key
 export SIGNHOLD_APPROVER_KEYS=ops-phone:<base64 ed25519 pub>,cfo-yubikey:<base64 ed25519 pub>  # human approver PUBLIC keys (see Human approval); private halves stay on the devices
 export SIGNHOLD_APPROVAL_TTL_MS=900000              # how long an escalation stays approvable (default 15 min)
+export SIGNHOLD_ATTESTOR_KEY=0x<32-byte secp256k1 hex>   # optional: on-chain enforcement (POST /v1/attestations for SignholdGuard); never an approver, never the audit key
+export SIGNHOLD_ATTESTOR_GUARDS=0xguard1,0xguard2    # optional allowlist of guard contracts the service signs for
+export SIGNHOLD_ATTESTATION_TTL_MS=900000           # lifetime of an attestation (default: the approval TTL)
 export SIGNHOLD_POLICY_FILE=./policy.json           # optional; defaults to conservativeDefaultPolicy
 export SIGNHOLD_AUDIT_FILE=./audit.jsonl            # optional; defaults to in-memory
 export SIGNHOLD_KNOWN_EVM_CONTRACTS=0xabc...,0xdef... # optional; enables new-contract detection
@@ -180,6 +185,20 @@ Human approval of an escalation, verified on the server. The body is produced by
 
 `200 { "verdict": "allow", "approvalId": "…", "auditId": "…", "approvalAuditId": "…" }` when the pending approval exists, is not expired or used, `keyId` is registered, the signature verifies and `approvedAt` is inside the window; every other outcome is a generic `403 approval_rejected` (the reason goes to the server log and to an `approval_rejected` audit record, never to the response) and burns the challenge, so a new check is needed. Approvals are single use. `GET /v1/approvals/:auditId` returns `{ "auditId", "status": "pending" | "approved" | "expired" | "rejected" | "unknown", "expiresAt"?, "approvedBy"?, "approvalId"?, "approvedAt"? }`; it is what the SDK polls and it cannot change state. Both routes require an API key like every other route and sit behind the same rate limiter.
 
+### `POST /v1/attestations` (on-chain enforcement)
+
+Present when `SIGNHOLD_ATTESTOR_KEY` is set. The agent asks the service to sign its verdict for the exact Safe transaction it is about to execute through a Safe guarded by [`SignholdGuard`](contracts/safe-guard/README.md):
+
+```json
+{ "auditId": "7d2e…", "safe": "0x1111…", "guard": "0xgua…", "chainId": 8453,
+  "safeTx": { "to": "0x3333…", "value": "0", "data": "0xa9059cbb…", "operation": 0, "safeTxGas": "0", "baseGas": "0", "gasPrice": "0", "gasToken": "0x000…", "refundReceiver": "0x000…", "nonce": "12" },
+  "safeTxHash": "0x…" }
+```
+
+`200 { "verdict": "allow" | "escalate", "verdictCode": 1 | 2, "safeTxHash", "expiresAt", "expiresAtUnix", "auditIdBytes32", "attestor", "signature", "attestationAuditId", … }` only when the record is a `check` whose verdict is `allow` or `escalate`, `safe` is the intent's `from`, chain id / `to` / `value` / `data` match the audited intent byte for byte, the transaction is a plain call without gas refund and (when `SIGNHOLD_ATTESTOR_GUARDS` is set) the guard is allowlisted. Everything else, including every `block` decision, is a generic `403 attestation_refused` with the reason only in the log and in an `attestation_refused` audit record. `signature` is an EIP-712 secp256k1 signature the guard verifies; it is meaningless for any other transaction, Safe, guard or chain. SDK: `client.requestAttestation(req)`.
+
+`POST /v1/approvals` additionally accepts `scheme: "eip712"` with a 65-byte `0x` signature from an approver registered as a secp256k1 address (`SIGNHOLD_APPROVER_KEYS=ops-wallet:0x<address>`): the device's EIP-712 `Approval` for the attested Safe transaction, so one device signature closes the server-side escalation and satisfies the guard on-chain.
+
 Other routes: `GET /healthz`, `GET /v1/audit/:id`, `GET /v1/audit?agentId=&limit=&cursor=`, `GET /v1/audit/verify?from=&to=&requireSignatures=` (re-walks the hash chain and reports `hash_mismatch` / `broken_link` / `seq_gap` / `bad_signature`). Offline: `npx tsx packages/api/scripts/verify-audit.ts audit.jsonl --public-key pub.pem --require-signatures` (also lists every approval with the check it refers to and the approver key).
 
 Errors are always JSON with a `requestId`: `400 bad_request | unsupported_chain`, `401 unauthorized | invalid_signature`, `403 approval_rejected`, `404 policy_not_found | not_found`, `413 payload_too_large`, `415 unsupported_media_type`, `429 rate_limited` (with `retry-after`), `503 audit_unavailable`, `500 internal_error` (generic body; details only in server logs).
@@ -255,7 +274,19 @@ How to run it:
 3. The human opens the audit record (`GET /v1/audit/:auditId`), checks the explanation and findings, and signs: `npx tsx packages/api/scripts/approve.ts --key ops-phone.key --key-id ops-phone --audit-id <auditId> --challenge <challenge> --record record.json --url https://signhold --api-key <the device's own API key>`. With `--record`, the CLI recomputes the challenge from the record and refuses to sign if the two differ, so a challenge relayed through the agent cannot point at a different transaction.
 4. The server verifies the signature against its registry, marks the approval used, appends an `approval` audit record linked to the check, and `GET /v1/approvals/:auditId` (or the SDK's `waitForApproval`) reports `approved`.
 
-Properties: single use (a replay is a `403` and an `approval_rejected` record), time-boxed (`SIGNHOLD_APPROVAL_TTL_MS`, default 15 minutes), only `escalate` decisions are approvable (`allow` needs none, `block` never gets one), any invalid attempt burns the challenge so the next request has to start from a fresh check, failures are a generic `403` with the reason only in logs and the audit chain, and `scripts/verify-audit.ts` shows every approval next to the check it refers to. What this does **not** yet give you: the service is still the verifier, so a compromised Signhold host could approve. Moving enforcement on-chain (a Safe guard module / Solana program that checks the approver signature itself) is the roadmap item; see docs/THREAT_MODEL.md, threat T7.
+Properties: single use (a replay is a `403` and an `approval_rejected` record), time-boxed (`SIGNHOLD_APPROVAL_TTL_MS`, default 15 minutes), only `escalate` decisions are approvable (`allow` needs none, `block` never gets one), any invalid attempt burns the challenge so the next request has to start from a fresh check, failures are a generic `403` with the reason only in logs and the audit chain, and `scripts/verify-audit.ts` shows every approval next to the check it refers to. For a signer that is not a Safe, the service is still the verifier, so a compromised Signhold host could approve (docs/THREAT_MODEL.md, threat T7); for a Safe, [Enforcement](#enforcement-safe-guard) below moves both the verdict and the approval check on-chain.
+
+## Enforcement (Safe guard)
+
+[`contracts/safe-guard`](contracts/safe-guard/README.md) (`@signhold/safe-guard`) is a Safe transaction guard, `SignholdGuard.sol`, that makes the verdict binding for Safe wallets. With the guard set, `Safe.execTransaction` reverts unless the Signhold service has signed an EIP-712 attestation of its verdict for **that exact Safe transaction hash** (`NotAttested` otherwise; `block` is never attested) and, when the verdict is `escalate` or the transaction touches the Safe's configuration, the guard itself, a delegatecall or a gas refund, a registered human device has signed an EIP-712 approval (`ApprovalRequired` otherwise; single use, time-boxed). Three keys on three hosts, and an escalated payment needs all three:
+
+```
+  agent host: Safe owner key        -> signs the Safe transaction            (necessary, no longer sufficient)
+  Signhold host: attestor key       -> signs Attestation{safe, safeTxHash, verdict, expiresAt, auditId}
+  approver device: approver key     -> signs Approval{safe, safeTxHash, auditId, approvedAt}   (secp256k1, or P-256 via RIP-7212)
+```
+
+This removes the "agent-side bypass" residual for Safe wallets (a compromised agent process can call its signer, but the signature alone executes nothing) and the "service verifies approvals" residual (the chain verifies the device's signature against an approver set only the Safe can change, with a device approval). The agent's loop becomes `check` → `requestAttestation` → `guard.submitAttestation` → (`escalate`: hand the audit id and the Safe transaction to a human, whose device reviews the sealed record, recomputes the hash and signs once for both `POST /v1/approvals` and `guard.submitApproval`) → `execTransaction`. Owners can always remove the guard with an approved transaction, and a device-approved `setGuard(address(0))` is accepted even without the service (owner escape hatch). `npm run demo:safe-guard` runs the four cases above against a real Safe 1.5.0 on an in-process chain; `npm run test:contracts` runs the 27 guard tests with a gas report (≈ +32 k gas on an allowed transfer, ≈ +40 k with an approval). EVM and Safe only, **unaudited**; details, the per-key compromise matrix, chain support for P-256 and the limitations are in the [workspace README](contracts/safe-guard/README.md).
 
 ## Policy
 
@@ -307,7 +338,7 @@ Hardening, key handling and the deployment checklist live in [SECURITY.md](SECUR
 
 - Verified-source / TVL / known-exploit feeds as additional reputation providers (the `HttpProvider` adapter is the integration point); per-tenant baselines shared across agents of the same operator.
 - SOC 2 controls for the hosted service: retention policies, per-tenant audit scoping, signed policy files, response signing (tamper-evident audit log and key rotation shipped in 0.1).
-- Custody integrations: Fireblocks policy-engine hooks and Safe (Gnosis) guard module so Signhold sits inline with institutional signing. For human approval (I-HITL) specifically, the Safe guard / Solana program would verify the approver's Ed25519 signature over the escalation challenge on-chain, so that neither the agent host nor the Signhold service can execute an escalated transaction without it; today the service is the verifier (see docs/THREAT_MODEL.md, T7).
+- Custody integrations: Fireblocks policy-engine hooks; a Solana program with the semantics of `SignholdGuard` (attested verdict + device-signed approval verified on-chain) so non-Safe wallets get the same enforcement; a module guard for Safe 1.5.0 so modules cannot bypass the transaction guard; P-256 approver keys in the server registry (today P-256 devices approve on-chain only); a third-party audit of `SignholdGuard.sol`.
 
 ## Contributing and license
 

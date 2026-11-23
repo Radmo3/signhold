@@ -23,6 +23,7 @@ jobs:
       - run: npm run test
       - run: npm run demo
       - run: npm run demo:agentkit
+      - run: npm run demo:safe-guard
       - run: npm run experiment:smoke
       - name: Production start refuses to run without API keys
         run: |
@@ -47,4 +48,4 @@ jobs:
       - name: Lockfile lint (registry allowlist, https only, integrity hashes)
         run: node scripts/lockfile-lint.mjs
       - name: Pinned versions in security-owned packages
-        run: node scripts/check-pinned.mjs packages/api packages/sdk packages/core integrations/agentkit experiments/cap-bypass
+        run: node scripts/check-pinned.mjs packages/api packages/sdk packages/core integrations/agentkit experiments/cap-bypass contracts/safe-guard

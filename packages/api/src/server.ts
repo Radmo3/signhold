@@ -4,6 +4,7 @@ import { z, ZodError } from "zod";
 import type { ApprovalStatusResponse, AuditPrincipal, AuditRecord, ChainAdapter, CheckResponse, Decision, SimulationResult } from "@signhold/core";
 import { computeApprovalChallenge, nowIso } from "@signhold/core";
 import { ApproverRegistry, DEFAULT_APPROVAL_CLOCK_SKEW_MS, PendingApprovalStore, verifyApprovalSubmission, type ApprovalRejectionReason } from "./approvals.js";
+import { AttestationService, parseAttestationRequest, type AttestationRefusalReason } from "./attestations.js";
 import { ApiKeyring, NonceCache, type SignatureInput } from "./auth.js";
 import { AdapterUnavailableError, CircuitBreakerAdapter } from "./breaker.js";
 import { verifyChain } from "./integrity.js";
@@ -138,7 +139,11 @@ export async function createServer(opts: ServerOptions): Promise<FastifyInstance
   const serverHeldKeyIds = new Set<string>(opts.auditPublicKeys?.keys() ?? []);
   const auditSignerKeyId = (opts.audit as { signerKeyId?: string }).signerKeyId;
   if (auditSignerKeyId) serverHeldKeyIds.add(auditSignerKeyId);
-  const approvers = new ApproverRegistry(opts.approvers ?? [], { forbiddenKeyIds: serverHeldKeyIds });
+  // On-chain enforcement: the attestor key (secp256k1) is server-held too, so it can never be an approver.
+  const attestations = opts.attestor ? new AttestationService({ ...opts.attestor, ttlMs: opts.attestor.ttlMs ?? opts.approvals?.ttlMs, now: opts.attestor.now ?? opts.approvals?.now }) : undefined;
+  const approvers = new ApproverRegistry(opts.approvers ?? [], { forbiddenKeyIds: serverHeldKeyIds, forbiddenAddresses: attestations ? [attestations.address] : [] });
+  if (attestations) app.log.info({ attestor: attestations.address, guards: [...attestations.guards], ttlMs: attestations.ttlMs }, "on-chain attestation enabled: POST /v1/attestations signs verdicts for SignholdGuard");
+  else app.log.info("SIGNHOLD_ATTESTOR_KEY is not set: on-chain attestation (POST /v1/attestations) disabled");
   const pendingApprovals = new PendingApprovalStore({ ttlMs: opts.approvals?.ttlMs, maxPending: opts.approvals?.maxPending, now: opts.approvals?.now });
   const approvalsNow = opts.approvals?.now ?? Date.now;
   const approvalClockSkewMs = opts.approvals?.clockSkewMs ?? DEFAULT_APPROVAL_CLOCK_SKEW_MS;
@@ -500,7 +505,9 @@ export async function createServer(opts: ServerOptions): Promise<FastifyInstance
     const now = approvalsNow();
     const pending = pendingApprovals.get(body.auditId);
     const record = await opts.audit.get(body.auditId);
-    const reasons: ApprovalRejectionReason[] = verifyApprovalSubmission(body, { pending, record, registry: approvers, now, clockSkewMs: approvalClockSkewMs });
+    // `eip712` approvals are bound to the attestation the service issued for this audit id (if any).
+    const eip712 = body.scheme === "eip712" ? attestations?.bindingFor(body.auditId) : undefined;
+    const reasons: ApprovalRejectionReason[] = await verifyApprovalSubmission(body, { pending, record, registry: approvers, now, clockSkewMs: approvalClockSkewMs, eip712 });
 
     // Claim is synchronous and single-use: two concurrent valid submissions cannot both win.
     const claimed = reasons.length === 0 ? pendingApprovals.claim(body.auditId, { keyId: body.keyId, approvedAt: body.approvedAt }) : undefined;
@@ -529,6 +536,7 @@ export async function createServer(opts: ServerOptions): Promise<FastifyInstance
             approverKeyId: body.keyId,
             reason,
             rejectionReason: reasons.join(","),
+            scheme: body.scheme ?? "ed25519",
           },
         };
         try {
@@ -557,6 +565,7 @@ export async function createServer(opts: ServerOptions): Promise<FastifyInstance
         approverKeyId: body.keyId,
         approvedAt: body.approvedAt,
         reason,
+        scheme: body.scheme ?? "ed25519",
       },
     };
     let sealed: AuditRecord;
@@ -571,6 +580,56 @@ export async function createServer(opts: ServerOptions): Promise<FastifyInstance
     req.log.info({ auditId: body.auditId, approvalId: claimed.approvalId, approvalAuditId: sealed.id, approverKeyId: body.keyId, apiKeyId: req.principal.apiKeyId }, "approval verified");
     return { verdict: "allow" as const, approvalId: claimed.approvalId, auditId: body.auditId, approvalAuditId: sealed.id };
   });
+
+  // ---- On-chain enforcement: attest a check's verdict for an exact Safe transaction ----
+  // Anyone with an API key may ask (typically the agent, which then relays the signature to
+  // the guard); the signature is worthless for any other transaction, Safe, guard or chain,
+  // and `block` is never attested. Every refusal is a generic 403 with the reason in the log
+  // and in an `attestation_refused` audit record.
+  if (attestations) {
+    const refusedBody = (requestId: string) => ({ error: "attestation_refused", message: "attestation could not be issued", requestId });
+    app.post("/v1/attestations", async (req, reply) => {
+      const body = parseAttestationRequest(req.body);
+      const record = await opts.audit.get(body.auditId);
+      const reasons: AttestationRefusalReason[] = attestations.verify(body, record);
+      const principal: AuditPrincipal = { ...req.principal };
+      if (reasons.length > 0 || !record) {
+        req.log.warn({ auditId: body.auditId, safe: body.safe, guard: body.guard, chainId: String(body.chainId), reasons, apiKeyId: req.principal.apiKeyId }, "attestation refused");
+        if (record) {
+          const refused: AuditRecord = {
+            id: randomUUID(),
+            type: "attestation_refused",
+            intent: record.intent,
+            decision: record.decision,
+            context: record.context,
+            recordedAt: nowIso(),
+            principal,
+            attestation: { ...attestations.describe(body, record.id), outcome: "refused", refusalReason: reasons.join(",") },
+          };
+          try {
+            await opts.audit.record(refused);
+          } catch (err) {
+            req.log.error({ err, auditId: body.auditId }, "audit store failed to record attestation refusal");
+            return reply.code(503).send({ error: "audit_unavailable", message: "attestation refusal could not be recorded", requestId: req.id });
+          }
+        }
+        return reply.code(403).send(refusedBody(req.id));
+      }
+      const { response, audit, issued } = await attestations.issue(body, record);
+      const attRecord: AuditRecord = { id: randomUUID(), type: "attestation", intent: record.intent, decision: record.decision, context: record.context, recordedAt: nowIso(), principal, attestation: audit };
+      let sealed: AuditRecord;
+      try {
+        sealed = await opts.audit.record(attRecord);
+      } catch (err) {
+        // No record, no signature: the attestation is not returned and is not remembered.
+        req.log.error({ err, auditId: body.auditId }, "audit store failed to record attestation");
+        return reply.code(503).send({ error: "audit_unavailable", message: "attestation could not be recorded; transaction must not proceed", requestId: req.id });
+      }
+      attestations.remember(issued, sealed.id);
+      req.log.info({ auditId: body.auditId, attestationAuditId: sealed.id, safe: response.safe, guard: response.guard, chainId: response.chainId, safeTxHash: response.safeTxHash, verdict: response.verdict, apiKeyId: req.principal.apiKeyId }, "attestation issued");
+      return { ...response, attestationAuditId: sealed.id };
+    });
+  }
 
   // Read-only: the agent polls this; nothing here changes state.
   app.get<{ Params: { auditId: string } }>("/v1/approvals/:auditId", async (req, reply) => {

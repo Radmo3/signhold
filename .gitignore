@@ -2,3 +2,5 @@ node_modules
 dist
 *.log
 .env
+contracts/safe-guard/artifacts
+contracts/safe-guard/cache

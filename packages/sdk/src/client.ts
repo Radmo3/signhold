@@ -1,4 +1,4 @@
-import type { AgentContext, ApprovalStatus, ApprovalStatusResponse, AuditRecord, CheckRequest, CheckResponse, TransactionIntent } from "@signhold/core";
+import type { AgentContext, ApprovalStatus, ApprovalStatusResponse, AttestationRequest, AttestationResponse, AuditRecord, CheckRequest, CheckResponse, TransactionIntent } from "@signhold/core";
 import { SignholdHttpError, SignholdNetworkError, SignholdProtocolError, SignholdTimeoutError, ApprovalDeniedError, ApprovalTimeoutError } from "./errors.js";
 import { reviveCheckResponse, reviveContext, reviveDecision, reviveIntent, serializeRequest } from "./serialization.js";
 import { signRequest, type RequestSigner } from "./signing.js";
@@ -151,6 +151,17 @@ export class SignholdClient {
     }
   }
 
+  /**
+   * On-chain enforcement (`@signhold/safe-guard`): ask the service to sign its verdict for an
+   * exact Safe transaction so the guard will accept it. The service refuses (403) unless the
+   * transaction is byte-for-byte the audited intent and the verdict is `allow` or `escalate`;
+   * `block` is never attested. The returned signature is only meaningful to the named guard.
+   */
+  async requestAttestation(req: AttestationRequest, opts: Pick<CheckOptions, "timeoutMs" | "signal"> = {}): Promise<AttestationResponse> {
+    const raw = await this.request("POST", "/v1/attestations", { body: req, timeoutMs: opts.timeoutMs, signal: opts.signal });
+    return assertAttestationResponse(raw, req.auditId);
+  }
+
   async health(): Promise<{ ok: boolean; chains: string[]; policies: string[] }> {
     return (await this.request("GET", "/healthz", {})) as { ok: boolean; chains: string[]; policies: string[] };
   }
@@ -258,6 +269,20 @@ function assertCheckResponse(raw: unknown): Record<string, unknown> {
     }
   }
   return r as Record<string, unknown>;
+}
+
+/** Fail closed on malformed attestation responses: only a well-formed allow/escalate attestation is returned. */
+function assertAttestationResponse(raw: unknown, auditId: string): AttestationResponse {
+  const r = raw as Partial<AttestationResponse> | null;
+  if (!r || typeof r !== "object") throw new SignholdProtocolError("malformed attestation response");
+  if (r.auditId !== auditId) throw new SignholdProtocolError("attestation response is for a different audit id");
+  const okVerdict = (r.verdict === "allow" && r.verdictCode === 1) || (r.verdict === "escalate" && r.verdictCode === 2);
+  if (!okVerdict) throw new SignholdProtocolError("malformed attestation response: unknown verdict");
+  for (const k of ["attestationAuditId", "safe", "guard", "chainId", "safeTxHash", "expiresAt", "expiresAtUnix", "auditIdBytes32", "attestor", "signature"] as const) {
+    if (typeof r[k] !== "string" || !r[k]) throw new SignholdProtocolError(`malformed attestation response: missing ${k}`);
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(r.safeTxHash!) || !/^0x[0-9a-fA-F]{130}$/.test(r.signature!)) throw new SignholdProtocolError("malformed attestation response: bad hash or signature");
+  return r as AttestationResponse;
 }
 
 function reviveAudit(raw: Record<string, unknown>): AuditRecord {

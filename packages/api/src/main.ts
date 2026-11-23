@@ -80,6 +80,11 @@ async function main(): Promise<void> {
   // ---- Human approver keys (I-HITL): public halves only; private keys live on the approver devices ----
   const approvers = parseApproverKeysEnv(env.SIGNHOLD_APPROVER_KEYS);
 
+  // ---- On-chain attestor key (secp256k1, contracts/safe-guard): optional; never the audit key, never an approver ----
+  const attestor = env.SIGNHOLD_ATTESTOR_KEY
+    ? { privateKey: env.SIGNHOLD_ATTESTOR_KEY, guards: envList("SIGNHOLD_ATTESTOR_GUARDS"), ttlMs: envInt("SIGNHOLD_ATTESTATION_TTL_MS", envInt("SIGNHOLD_APPROVAL_TTL_MS", 15 * 60_000)) }
+    : undefined;
+
   const rateMax = envInt("SIGNHOLD_RATE_LIMIT_MAX", 120);
   const corsOrigins = envList("SIGNHOLD_CORS_ORIGINS");
   const trustProxyRaw = env.SIGNHOLD_TRUST_PROXY;
@@ -110,6 +115,7 @@ async function main(): Promise<void> {
     },
     auditPublicKeys,
     approvers,
+    attestor,
     approvals: { ttlMs: envInt("SIGNHOLD_APPROVAL_TTL_MS", 15 * 60_000), clockSkewMs: envInt("SIGNHOLD_APPROVAL_CLOCK_SKEW_MS", 60_000) },
     logger: { level: env.LOG_LEVEL ?? "info" },
     shutdownGraceMs: envInt("SIGNHOLD_SHUTDOWN_GRACE_MS", 10_000),

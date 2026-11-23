@@ -1,0 +1,6 @@
+{
+  "filter_paths": "node_modules|contracts/test",
+  "hardhat_ignore_compile": true,
+  "detectors_to_exclude": "timestamp,assembly,low-level-calls,too-many-digits,unused-return",
+  "exclude_informational": false
+}
