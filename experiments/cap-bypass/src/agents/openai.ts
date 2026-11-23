@@ -54,6 +54,11 @@ export function openaiAgent(opts: OpenAIAgentOptions): Agent {
           });
           state.usage.inputTokens += res.usage?.prompt_tokens ?? 0;
           state.usage.outputTokens += res.usage?.completion_tokens ?? 0;
+          // Some OpenAI-compatible providers return a 200 with no `choices` (an upstream error body);
+          // surface that as a provider error rather than a TypeError.
+          if (!Array.isArray(res.choices) || res.choices.length === 0) {
+            throw new Error(`provider returned no choices${(res as { error?: { message?: string } }).error?.message ? `: ${(res as { error?: { message?: string } }).error!.message}` : ""}`);
+          }
           const msg = res.choices[0]?.message;
           if (!msg) return state.finish("no_tool_call", "");
           messages.push({ role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls?.length ? msg.tool_calls : undefined });
